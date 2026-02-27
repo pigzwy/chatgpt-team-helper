@@ -148,21 +148,10 @@ router.post('/', apiKeyAuth, async (req, res) => {
     const hasExpireAt = Object.prototype.hasOwnProperty.call(req.body || {}, 'expireAt')
     const expireAtInput = req.body?.expireAt
     const normalizedExpireAt = hasExpireAt ? normalizeExpireAt(expireAtInput) : null
-    const shouldUpdateExpireAt = hasExpireAt || Boolean(deriveExpireAtFromToken(token))
-    const derivedExpireAt = shouldUpdateExpireAt && !hasExpireAt ? deriveExpireAtFromToken(token) : null
-    const expireAt = hasExpireAt ? normalizedExpireAt : (derivedExpireAt || null)
-
-    const hasIsDemoted = Object.prototype.hasOwnProperty.call(body, 'isDemoted') || Object.prototype.hasOwnProperty.call(body, 'is_demoted')
-    const isDemotedInput = Object.prototype.hasOwnProperty.call(body, 'isDemoted') ? body.isDemoted : body.is_demoted
-    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
-    if (hasIsDemoted && normalizedIsDemoted === null) {
-      return res.status(400).json({
-        error: 'Invalid isDemoted format',
-        message: 'isDemoted 格式错误，请使用 true/false 或 1/0'
-      })
-    }
-    const shouldUpdateIsDemoted = hasIsDemoted
-    const isDemotedValue = normalizedIsDemoted ? 1 : 0
+	    const shouldUpdateExpireAt = hasExpireAt || Boolean(deriveExpireAtFromToken(token))
+	    const derivedExpireAt = shouldUpdateExpireAt && !hasExpireAt ? deriveExpireAtFromToken(token) : null
+	    const expireAt = hasExpireAt ? normalizedExpireAt : (derivedExpireAt || null)
+	    // isDemoted/is_demoted: deprecated (ignored). Keep request compatibility.
 
     if (hasExpireAt && expireAtInput != null && String(expireAtInput).trim() && !normalizedExpireAt) {
       return res.status(400).json({
@@ -215,44 +204,42 @@ router.post('/', apiKeyAuth, async (req, res) => {
 
     if (existingAccount) {
       // 账号已存在，更新token和其他信息
-      db.run(
-        `UPDATE gpt_accounts
-         SET token = ?,
-             refresh_token = ?,
-             chatgpt_account_id = ?,
-             oai_device_id = ?,
-             is_open = 1,
-             expire_at = CASE WHEN ? = 1 THEN ? ELSE expire_at END,
-             is_demoted = CASE WHEN ? = 1 THEN ? ELSE is_demoted END,
-             updated_at = DATETIME('now', 'localtime')
-         WHERE id = ?`,
-        [token, refreshToken || null, chatgptAccountId || null, oaiDeviceId || null, shouldUpdateExpireAt ? 1 : 0, expireAt, shouldUpdateIsDemoted ? 1 : 0, isDemotedValue, existingAccount.id]
-      )
-      saveDatabase()
+	      db.run(
+	        `UPDATE gpt_accounts
+	         SET token = ?,
+	             refresh_token = ?,
+	             chatgpt_account_id = ?,
+	             oai_device_id = ?,
+	             is_open = 1,
+	             expire_at = CASE WHEN ? = 1 THEN ? ELSE expire_at END,
+	             updated_at = DATETIME('now', 'localtime')
+	         WHERE id = ?`,
+	        [token, refreshToken || null, chatgptAccountId || null, oaiDeviceId || null, shouldUpdateExpireAt ? 1 : 0, expireAt, existingAccount.id]
+	      )
+	      saveDatabase()
 
-      // 获取更新后的账号信息
-      const result = db.exec(`
-        SELECT id, email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at,
-               COALESCE(is_demoted, 0) AS is_demoted,
-               created_at, updated_at
-        FROM gpt_accounts
-        WHERE id = ?
-      `, [existingAccount.id])
+	      // 获取更新后的账号信息
+	      const result = db.exec(`
+	        SELECT id, email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at,
+	               created_at, updated_at
+	        FROM gpt_accounts
+	        WHERE id = ?
+	      `, [existingAccount.id])
 
-      const row = result[0].values[0]
-      const account = {
-        id: row[0],
-        email: row[1],
-        token: row[2],
-        refreshToken: row[3],
-        userCount: row[4],
-        chatgptAccountId: row[5],
-        oaiDeviceId: row[6],
-        expireAt: row[7] || null,
-        isDemoted: Boolean(row[8]),
-        createdAt: row[9],
-        updatedAt: row[10]
-      }
+	      const row = result[0].values[0]
+	      const account = {
+	        id: row[0],
+	        email: row[1],
+	        token: row[2],
+	        refreshToken: row[3],
+	        userCount: row[4],
+	        chatgptAccountId: row[5],
+	        oaiDeviceId: row[6],
+	        expireAt: row[7] || null,
+	        isDemoted: false,
+	        createdAt: row[8],
+	        updatedAt: row[9]
+	      }
 
       const { account: syncedAccount, syncResult, removedUsers } = await syncAccountAndCleanup(account)
 
@@ -265,37 +252,36 @@ router.post('/', apiKeyAuth, async (req, res) => {
         removedUsers
       })
     } else {
-      // 创建新账号，默认人数设置为1而不是0
-      db.run(
-        `INSERT INTO gpt_accounts
-         (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_open, is_demoted, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-        [normalizedEmail, token, refreshToken || null, 1, chatgptAccountId || null, oaiDeviceId || null, expireAt, shouldUpdateIsDemoted ? isDemotedValue : 0]
-      )
+	      // 创建新账号，默认人数设置为1而不是0
+	      db.run(
+	        `INSERT INTO gpt_accounts
+	         (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_open, created_at, updated_at)
+	         VALUES (?, ?, ?, ?, ?, ?, ?, 1, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+	        [normalizedEmail, token, refreshToken || null, 1, chatgptAccountId || null, oaiDeviceId || null, expireAt]
+	      )
 
-      // 获取新创建的账号
-      const result = db.exec(`
-        SELECT id, email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at,
-               COALESCE(is_demoted, 0) AS is_demoted,
-               created_at, updated_at
-        FROM gpt_accounts
-        WHERE id = last_insert_rowid()
-      `)
+	      // 获取新创建的账号
+	      const result = db.exec(`
+	        SELECT id, email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at,
+	               created_at, updated_at
+	        FROM gpt_accounts
+	        WHERE id = last_insert_rowid()
+	      `)
 
       const row = result[0].values[0]
-      const account = {
-        id: row[0],
-        email: row[1],
-        token: row[2],
-        refreshToken: row[3],
-        userCount: row[4],
-        chatgptAccountId: row[5],
-        oaiDeviceId: row[6],
-        expireAt: row[7] || null,
-        isDemoted: Boolean(row[8]),
-        createdAt: row[9],
-        updatedAt: row[10]
-      }
+	      const account = {
+	        id: row[0],
+	        email: row[1],
+	        token: row[2],
+	        refreshToken: row[3],
+	        userCount: row[4],
+	        chatgptAccountId: row[5],
+	        oaiDeviceId: row[6],
+	        expireAt: row[7] || null,
+	        isDemoted: false,
+	        createdAt: row[8],
+	        updatedAt: row[9]
+	      }
 
       // 自动生成兑换码，数量为可用名额
       // 可用名额 = 总容量(5) - 当前人数(1) - 所有兑换码数(0) = 4

@@ -46,11 +46,11 @@
                   </div>
                   <span
                     class="inline-flex items-center rounded-full px-3 py-1 text-[12px] font-semibold border"
-                    :class="plan.key === 'no_warranty'
+                    :class="plan.orderType === 'no_warranty'
                       ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20'
                       : 'bg-blue-500/10 text-[#007AFF] border-blue-500/20'"
                   >
-                    {{ plan.key === 'no_warranty' ? '无质保' : '质保' }}
+                    {{ plan.orderType === 'no_warranty' ? '无质保' : (plan.orderType === 'warranty' ? '质保' : '商品') }}
                   </span>
                 </div>
 
@@ -72,17 +72,13 @@
                 <ul class="space-y-3.5 text-[14px] text-[#1d1d1f]/70 dark:text-white/70 leading-relaxed">
                   <li class="flex items-start gap-3">
                     <span class="h-1.5 w-1.5 rounded-full bg-[#007AFF] mt-2 flex-shrink-0"></span>
-                    <span>{{ plan.key === 'no_warranty' ? '不支持退款 / 补号' : '支持退款 / 补号' }}</span>
+                    <span>{{ plan.orderType === 'no_warranty' ? '不支持退款 / 补号' : '支持退款 / 补号' }}</span>
                   </li>
-                  <li class="flex items-start gap-3">
-                    <span class="h-1.5 w-1.5 rounded-full bg-[#007AFF] mt-2 flex-shrink-0"></span>
-                    <span>支付成功后系统自动处理</span>
-                  </li>
-                  <li v-if="plan.key === 'anti_ban'" class="flex items-start gap-3">
-                    <span class="h-1.5 w-1.5 rounded-full bg-red-600 mt-2 flex-shrink-0"></span>
-                    <span class="text-red-600 dark:text-red-400 font-semibold">经过特殊处理，无法退出工作空间，介意勿拍</span>
-                  </li>
-                </ul>
+	                  <li class="flex items-start gap-3">
+	                    <span class="h-1.5 w-1.5 rounded-full bg-[#007AFF] mt-2 flex-shrink-0"></span>
+	                    <span>支付成功后系统自动处理</span>
+	                  </li>
+	                </ul>
               </div>
 
               <div class="mt-auto flex items-center justify-between pt-5 border-t border-gray-200/60 dark:border-white/10">
@@ -109,20 +105,7 @@ const meta = ref<PurchaseMeta | null>(null)
 const errorMessage = ref('')
 const loading = ref(false)
 
-const plans = computed<PurchasePlan[]>(() => {
-  const allPlans = meta.value?.plans || []
-  // 自定义排序：防封禁商品放在第二位
-  const sortOrder: Record<string, number> = {
-    'warranty': 1,      // 质保商品第一位
-    'anti_ban': 2,      // 防封禁商品第二位
-    'no_warranty': 3    // 无质保商品第三位
-  }
-  return [...allPlans].sort((a, b) => {
-    const orderA = sortOrder[a.key] ?? 999
-    const orderB = sortOrder[b.key] ?? 999
-    return orderA - orderB
-  })
-})
+const plans = computed<PurchasePlan[]>(() => meta.value?.plans || [])
 
 const loadMeta = async () => {
   if (loading.value) return

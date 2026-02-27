@@ -51,3 +51,4 @@ coverage/
 .claude/
 
 chagpt-main/
+.ace-tool/

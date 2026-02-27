@@ -19,7 +19,7 @@ const getApiUrl = () => {
   return 'http://localhost:3000/api'
 }
 
-const API_URL = getApiUrl()
+export const API_URL = getApiUrl()
 
 const api = axios.create({
   baseURL: API_URL,
@@ -173,6 +173,79 @@ export const userService = {
   }
 }
 
+export interface AnnouncementItem {
+  id: number
+  title: string
+  content: string
+  pinned: boolean
+  publishedAt: string | null
+  read: boolean
+  readAt: string | null
+}
+
+export interface AnnouncementsListResponse {
+  items: AnnouncementItem[]
+  page: {
+    limit: number
+    offset: number
+    total: number
+  }
+}
+
+export interface AnnouncementsUnreadCountResponse {
+  unread: number
+}
+
+export interface AnnouncementsReadAllResponse {
+  ok: boolean
+  marked?: number
+}
+
+export const announcementService = {
+  async list(params?: { limit?: number; offset?: number }): Promise<AnnouncementsListResponse> {
+    const response = await api.get('/announcements', { params })
+    return response.data
+  },
+
+  async unreadCount(): Promise<AnnouncementsUnreadCountResponse> {
+    const response = await api.get('/announcements/unread-count')
+    return response.data
+  },
+
+  async markRead(id: number): Promise<{ ok: boolean }> {
+    const response = await api.post(`/announcements/${id}/read`)
+    return response.data
+  },
+
+  async readAll(): Promise<AnnouncementsReadAllResponse> {
+    const response = await api.post('/announcements/read-all')
+    return response.data
+  },
+}
+
+export interface AdminAnnouncementItem {
+  id: number
+  title: string
+  content: string
+  isPublished: boolean
+  pinned: boolean
+  publishedAt: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface AdminAnnouncementsListResponse {
+  items: AdminAnnouncementItem[]
+  page: {
+    limit: number
+    offset: number
+    total: number
+  }
+}
+
+/**
+ * @deprecated 已取消按 seatType 划分名额；该类型仅保留用于接口兼容。
+ */
 export type TeamSeatType = 'undemoted' | 'demoted'
 
 export interface PointsMetaResponse {
@@ -180,7 +253,9 @@ export interface PointsMetaResponse {
   seat: {
     costPoints: number
     remaining: number
+    /** @deprecated 已取消按 seatType 划分名额，仅保留用于接口兼容。 */
     remainingByType?: Record<TeamSeatType, number>
+    /** @deprecated 已取消按 seatType 划分名额，仅保留用于接口兼容。 */
     defaultType?: TeamSeatType
   }
   withdraw: {
@@ -249,7 +324,9 @@ export interface PointsRedeemTeamSeatResponse {
   seat: {
     costPoints: number
     remaining: number
+    /** @deprecated 已取消按 seatType 划分名额，仅保留用于接口兼容。 */
     remainingByType?: Record<TeamSeatType, number>
+    /** @deprecated 已取消按 seatType 划分名额，仅保留用于接口兼容。 */
     defaultType?: TeamSeatType
   }
   redemption: any
@@ -272,6 +349,7 @@ export interface GptAccount {
   userCount: number
   inviteCount?: number
   isOpen?: boolean
+  /** @deprecated 降级账号概念已移除；该字段仅保留用于兼容历史客户端。 */
   isDemoted?: boolean
   isBanned?: boolean
   chatgptAccountId?: string
@@ -286,6 +364,7 @@ export interface CreateGptAccountDto {
   token: string
   refreshToken?: string
   userCount?: number
+  /** @deprecated 降级账号概念已移除；该字段仅保留用于兼容历史客户端（会被忽略）。 */
   isDemoted?: boolean
   isBanned?: boolean
   chatgptAccountId: string
@@ -299,6 +378,7 @@ export interface ChatgptAccountCheckInfo {
   planType: string | null
   expiresAt: string | null
   hasActiveSubscription: boolean
+  /** @deprecated 降级账号概念已移除；该字段仅保留用于兼容历史客户端（恒为 false）。 */
   isDemoted: boolean
 }
 
@@ -358,6 +438,34 @@ export interface DeleteInviteResponse {
   inviteCount: number
 }
 
+export type AccountStatus = 'normal' | 'expired' | 'banned' | 'failed'
+
+export interface CheckAccountStatusItem {
+  id: number
+  email: string
+  createdAt: string
+  expireAt?: string | null
+  status: AccountStatus
+  reason?: string | null
+  refreshed?: boolean
+}
+
+export interface CheckAccountStatusResponse {
+  message: string
+  rangeDays: 7 | 15 | 30
+  checkedTotal: number
+  summary: {
+    normal: number
+    expired: number
+    banned: number
+    failed: number
+  }
+  refreshedCount: number
+  items: CheckAccountStatusItem[]
+  truncated: boolean
+  skipped: number
+}
+
 export interface RefreshTokenResponse {
   message: string
   account: GptAccount
@@ -367,7 +475,22 @@ export interface RefreshTokenResponse {
   expiresIn?: number
 }
 
-export type RedemptionChannel = 'common' | 'linux-do' | 'xhs' | 'xianyu' | 'artisan-flow'
+export type RedemptionChannel = string
+
+export interface Channel {
+  key: string
+  name: string
+  redeemMode: string
+  allowCommonFallback: boolean
+  isActive: boolean
+  isBuiltin: boolean
+  sortOrder: number
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+/**
+ * @deprecated `anti_ban` 已下线；保留仅用于兼容历史订单/兑换码数据。
+ */
 export type PurchaseOrderType = 'warranty' | 'no_warranty' | 'anti_ban'
 
 export interface RedemptionCode {
@@ -377,6 +500,8 @@ export interface RedemptionCode {
   redeemedAt?: string
   redeemedBy?: string
   accountEmail?: string
+  // Whether the bound GPT account is marked as banned (server may omit in older versions).
+  accountIsBanned?: boolean
   channel: RedemptionChannel
   channelName?: string
   orderType?: PurchaseOrderType | null
@@ -401,6 +526,7 @@ export interface AppRuntimeConfig {
   locale: string
   turnstileSiteKey?: string | null
   turnstileEnabled?: boolean
+  channels?: Channel[]
   features?: {
     xhs?: boolean
     xianyu?: boolean
@@ -420,19 +546,35 @@ export interface PurchaseMeta {
 }
 
 export interface PurchasePlan {
-  key: PurchaseOrderType
+  key: string
   productName: string
   amount: string
   serviceDays: number
+  orderType?: PurchaseOrderType
   availableCount: number
   buyerRewardPoints?: number
   inviteRewardPoints?: number
+}
+
+export interface PurchaseProduct {
+  id?: number
+  productKey: string
+  productName: string
+  amount: string
+  serviceDays: number
+  orderType: PurchaseOrderType
+  codeChannels: string
+  isActive: boolean
+  sortOrder: number
+  createdAt?: string | null
+  updatedAt?: string | null
 }
 
 export interface PurchaseCreateOrderResponse {
   orderNo: string
   amount: string
   productName: string
+  productKey?: string
   orderType?: PurchaseOrderType
   payType: 'alipay' | 'wxpay'
   payUrl?: string | null
@@ -447,6 +589,8 @@ export interface PurchaseOrder {
   productName: string
   amount: string
   serviceDays: number
+  productKey?: string | null
+  codeChannel?: string | null
   orderType?: PurchaseOrderType
   payType?: 'alipay' | 'wxpay' | null
   payUrl?: string | null
@@ -611,7 +755,6 @@ export interface OpenAccountItem {
   pendingCount: number | null
   expireAt?: string | null
   remainingCodes: number
-  isDemoted: boolean
   orderType?: string
   creditCost?: string | null
 }
@@ -675,6 +818,13 @@ export interface CreditAdminOrdersResponse {
     pageSize: number
     total: number
   }
+}
+
+export interface CreditAdminOrdersSummaryResponse {
+  total: number
+  paid: number
+  pending: number
+  refunded: number
 }
 
 export interface CreditAdminBalanceResponse {
@@ -1135,15 +1285,110 @@ export const adminService = {
     const response = await api.delete(`/admin/rbac/users/${userId}`)
     return response.data
   },
+
+  async listAnnouncements(params?: { limit?: number; offset?: number }): Promise<AdminAnnouncementsListResponse> {
+    const response = await api.get('/admin/announcements', { params })
+    return response.data
+  },
+
+  async createAnnouncement(payload: { title: string; content: string; pinned?: boolean; isPublished?: boolean }): Promise<{ ok: boolean; id: number }> {
+    const response = await api.post('/admin/announcements', payload)
+    return response.data
+  },
+
+  async updateAnnouncement(
+    id: number,
+    payload: { title: string; content: string; pinned?: boolean; isPublished?: boolean }
+  ): Promise<{ ok: boolean }> {
+    const response = await api.put(`/admin/announcements/${id}`, payload)
+    return response.data
+  },
+
+  async deleteAnnouncement(id: number): Promise<{ ok: boolean }> {
+    const response = await api.delete(`/admin/announcements/${id}`)
+    return response.data
+  },
+
+  async getChannels(): Promise<{ channels: Channel[] }> {
+    const response = await api.get('/admin/channels')
+    return response.data
+  },
+
+  async createChannel(payload: {
+    key: string
+    name: string
+    allowCommonFallback?: boolean
+    isActive?: boolean
+    sortOrder?: number
+  }): Promise<{ channel: Channel }> {
+    const response = await api.post('/admin/channels', payload)
+    return response.data
+  },
+
+  async updateChannel(
+    key: string,
+    payload: { name?: string; allowCommonFallback?: boolean; isActive?: boolean; sortOrder?: number }
+  ): Promise<{ channel: Channel }> {
+    const response = await api.patch(`/admin/channels/${encodeURIComponent(key)}`, payload)
+    return response.data
+  },
+
+  async deleteChannel(key: string): Promise<{ ok: boolean }> {
+    const response = await api.delete(`/admin/channels/${encodeURIComponent(key)}`)
+    return response.data
+  },
+
+  async getPurchaseProducts(): Promise<{ products: PurchaseProduct[] }> {
+    const response = await api.get('/admin/purchase-products')
+    return response.data
+  },
+
+  async createPurchaseProduct(payload: {
+    productKey: string
+    productName: string
+    amount: string
+    serviceDays: number
+    orderType: PurchaseOrderType
+    codeChannels: string
+    isActive?: boolean
+    sortOrder?: number
+  }): Promise<{ product: PurchaseProduct }> {
+    const response = await api.post('/admin/purchase-products', payload)
+    return response.data
+  },
+
+  async updatePurchaseProduct(
+    productKey: string,
+    payload: Partial<{
+      productName: string
+      amount: string
+      serviceDays: number
+      orderType: PurchaseOrderType
+      codeChannels: string
+      isActive: boolean
+      sortOrder: number
+    }>
+  ): Promise<{ product: PurchaseProduct }> {
+    const response = await api.patch(`/admin/purchase-products/${encodeURIComponent(productKey)}`, payload)
+    return response.data
+  },
+
+  async deletePurchaseProduct(productKey: string): Promise<{ product: PurchaseProduct }> {
+    const response = await api.delete(`/admin/purchase-products/${encodeURIComponent(productKey)}`)
+    return response.data
+  },
 }
 
 export type AccountRecoveryRedeemState = 'pending' | 'failed' | 'done'
+export type AccountRecoveryRedeemSource = 'payment' | 'credit' | 'xianyu' | 'xhs' | 'manual' | ''
 
 export interface AccountRecoveryBannedAccountsListParams {
   page?: number
   pageSize?: number
   search?: string
   days?: number
+  pendingOnly?: boolean
+  sources?: string
 }
 
 export interface AccountRecoveryBannedAccountSummary {
@@ -1171,6 +1416,7 @@ export interface AccountRecoveryBannedAccountRedeemsListParams {
   search?: string
   status?: 'pending' | 'failed' | 'done' | 'all'
   days?: number
+  sources?: string
 }
 
 export interface AccountRecoveryRedeemLatestLog {
@@ -1187,6 +1433,7 @@ export interface AccountRecoveryBannedAccountRedeem {
   originalCodeId: number
   code: string
   channel: string
+  source: AccountRecoveryRedeemSource
   redeemedAt: string | null
   userEmail: string
   originalAccountEmail: string
@@ -1249,6 +1496,24 @@ export interface AccountRecoveryBannedAccountProcessedResponse {
   }
 }
 
+export interface AccountRecoveryOneClickPreviewParams {
+  source: Exclude<AccountRecoveryRedeemSource, ''>
+  days?: number
+  limit?: number
+}
+
+export interface AccountRecoveryOneClickPreviewResponse {
+  source: Exclude<AccountRecoveryRedeemSource, ''>
+  days: number
+  pendingCount: number
+  failedCount: number
+  needCount: number
+  availableCount: number
+  willProcessCount: number
+  originalCodeIds: number[]
+  generatedAt: string
+}
+
 export const accountRecoveryAdminService = {
   async listBannedAccounts(params?: AccountRecoveryBannedAccountsListParams): Promise<AccountRecoveryBannedAccountsResponse> {
     const response = await api.get('/admin/account-recovery/banned-accounts', { params })
@@ -1265,6 +1530,11 @@ export const accountRecoveryAdminService = {
 
   async getLogs(originalCodeId: number): Promise<AccountRecoveryLogsResponse> {
     const response = await api.get('/admin/account-recovery/logs', { params: { originalCodeId } })
+    return response.data
+  },
+
+  async oneClickPreview(params: AccountRecoveryOneClickPreviewParams): Promise<AccountRecoveryOneClickPreviewResponse> {
+    const response = await api.get('/admin/account-recovery/one-click/preview', { params })
     return response.data
   },
 
@@ -1354,6 +1624,11 @@ export const gptAccountService = {
 
   async checkAccessToken(token: string): Promise<CheckGptAccessTokenResponse> {
     const response = await api.post('/gpt-accounts/check-token', { token })
+    return response.data
+  },
+
+  async checkStatusRange(rangeDays: 7 | 15 | 30): Promise<CheckAccountStatusResponse> {
+    const response = await api.post('/gpt-accounts/check-status', { rangeDays })
     return response.data
   },
 
@@ -1582,6 +1857,11 @@ export const creditService = {
     return response.data
   },
 
+  async adminGetOrdersSummary(params?: { search?: string }): Promise<CreditAdminOrdersSummaryResponse> {
+    const response = await api.get('/credit/admin/orders/summary', { params })
+    return response.data
+  },
+
   async adminGetBalance(): Promise<CreditAdminBalanceResponse> {
     const response = await api.get('/credit/admin/balance')
     return response.data
@@ -1742,7 +2022,7 @@ export const redemptionCodeService = {
     return response
   },
 
-  async redeemXhsOrder(data: { email: string; orderNumber: string; strictToday?: boolean }): Promise<any> {
+  async redeemXhsOrder(data: { email: string; orderNumber: string }): Promise<any> {
     const response = await axios.post(`${API_URL}/redemption-codes/xhs/redeem-order`, data, {
       headers: {
         'Content-Type': 'application/json'
@@ -1769,7 +2049,7 @@ export const redemptionCodeService = {
     return response
   },
 
-  async redeemXianyuOrder(data: { email: string; orderId: string; strictToday?: boolean }): Promise<any> {
+  async redeemXianyuOrder(data: { email: string; orderId: string }): Promise<any> {
     const response = await axios.post(`${API_URL}/redemption-codes/xianyu/redeem-order`, data, {
       headers: {
         'Content-Type': 'application/json'
@@ -1822,6 +2102,7 @@ export interface AdminStatsOverviewResponse {
     total: number
     unused: number
     byChannel: Array<{ channel: string; total: number; unused: number }>
+    todayCommon: { total: number; unused: number }
     todayXhs: { total: number; unused: number }
     todayXianyu: { total: number; unused: number }
   }
@@ -1852,6 +2133,14 @@ export interface AdminStatsOverviewResponse {
     refunded: number
     paidAmount: number
     refundAmount: number
+    today: {
+      total: number
+      paid: number
+      pending: number
+      refunded: number
+      paidAmount: number
+      refundAmount: number
+    }
   }
   creditOrders: {
     total: number
@@ -1926,7 +2215,7 @@ export const purchaseService = {
     return response.data
   },
 
-  async createOrder(payload: { email: string; type: 'alipay' | 'wxpay'; orderType?: PurchaseOrderType }): Promise<PurchaseCreateOrderResponse> {
+  async createOrder(payload: { email: string; type: 'alipay' | 'wxpay'; productKey?: string; orderType?: PurchaseOrderType }): Promise<PurchaseCreateOrderResponse> {
     const response = await api.post('/purchase/orders', payload)
     return response.data
   },
@@ -2011,7 +2300,12 @@ export const xhsService = {
   async deleteOrder(id: number): Promise<{ message: string }> {
     const response = await api.delete(`/xhs/orders/${id}`)
     return response.data
-  }
+  },
+
+  async bindOrderCode(id: number, payload: { code: string; email?: string }): Promise<{ message: string; order: XhsOrder | null }> {
+    const response = await api.post(`/xhs/orders/${id}/bind-code`, payload)
+    return response.data
+  },
 }
 
 export const xianyuService = {
@@ -2048,7 +2342,12 @@ export const xianyuService = {
   async deleteOrder(id: number): Promise<{ message: string }> {
     const response = await api.delete(`/xianyu/orders/${id}`)
     return response.data
-  }
+  },
+
+  async bindOrderCode(id: number, payload: { code: string; email?: string }): Promise<{ message: string; order: XianyuOrder | null }> {
+    const response = await api.post(`/xianyu/orders/${id}/bind-code`, payload)
+    return response.data
+  },
 }
 
 export default api

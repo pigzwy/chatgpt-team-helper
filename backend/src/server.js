@@ -18,6 +18,8 @@ import purchaseRoutes from './routes/purchase.js'
 import creditRoutes from './routes/credit.js'
 import adminRoutes from './routes/admin.js'
 import adminStatsRoutes from './routes/admin-stats.js'
+import announcementsRoutes from './routes/announcements.js'
+import adminAnnouncementsRoutes from './routes/admin-announcements.js'
 import { initDatabase } from './database/init.js'
 import { startWaitingRoomAutoBoardingScheduler } from './services/waiting-room-auto-boarding.js'
 import { startOpenAccountsOvercapacitySweeper } from './services/open-accounts-sweeper.js'
@@ -120,6 +122,7 @@ initDatabase()
 // Routes
 app.use('/api/auth', authRoutes)
 app.use('/api/user', userRoutes)
+app.use('/api/announcements', announcementsRoutes)
 app.use('/api/gpt-accounts', gptAccountsRoutes)
 app.use('/api/auto-boarding', autoBoardingRoutes)
 app.use('/api/redemption-codes', redemptionCodesRoutes)
@@ -134,6 +137,7 @@ app.use('/api/open-accounts', openAccountsRoutes)
 app.use('/api/purchase', purchaseRoutes)
 app.use('/api/credit', creditRoutes)
 app.use('/api/admin/stats', adminStatsRoutes)
+app.use('/api/admin/announcements', adminAnnouncementsRoutes)
 app.use('/api/admin', adminRoutes)
 // ZPAY 的异步回调示例为 /notify?...，这里提供无 /api 前缀的兼容入口
 app.all('/notify', purchaseRoutes)

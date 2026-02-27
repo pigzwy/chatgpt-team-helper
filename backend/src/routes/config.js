@@ -1,6 +1,7 @@
 import express from 'express'
 import { getTurnstileSettings } from '../utils/turnstile-settings.js'
 import { getFeatureFlags } from '../utils/feature-flags.js'
+import { getChannels } from '../utils/channels.js'
 
 const router = express.Router()
 
@@ -29,6 +30,20 @@ router.get('/runtime', async (req, res) => {
     const turnstileSettings = await getTurnstileSettings()
     const turnstileSiteKey = String(turnstileSettings.siteKey || '').trim()
     const features = await getFeatureFlags()
+    const { list: channelList } = await getChannels()
+    const channels = (channelList || [])
+      .filter(channel => channel?.isActive)
+      .map(channel => ({
+        key: channel.key,
+        name: channel.name,
+        redeemMode: channel.redeemMode,
+        allowCommonFallback: channel.allowCommonFallback,
+        isActive: channel.isActive,
+        isBuiltin: channel.isBuiltin,
+        sortOrder: channel.sortOrder,
+        createdAt: channel.createdAt,
+        updatedAt: channel.updatedAt,
+      }))
 
     res.json({
       timezone,
@@ -36,6 +51,7 @@ router.get('/runtime', async (req, res) => {
       turnstileEnabled: Boolean(turnstileSettings.enabled),
       turnstileSiteKey: turnstileSiteKey || null,
       features,
+      channels,
       openAccountsEnabled,
       openAccountsMaintenanceMessage: openAccountsEnabled ? null : getOpenAccountsMaintenanceMessage()
     })
