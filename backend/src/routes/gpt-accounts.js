@@ -1104,13 +1104,20 @@ router.delete('/:id', async (req, res) => {
 
 // 同步账号用户数量
 router.post('/:id/sync-user-count', async (req, res) => {
-  try {
-    const accountId = Number(req.params.id)
+  const accountId = Number(req.params.id)
+
+  const syncOnce = async () => {
     const userSync = await syncAccountUserCount(accountId)
     const inviteSync = await syncAccountInviteCount(accountId, {
       accountRecord: userSync.account,
       inviteListParams: { offset: 0, limit: 1, query: '' }
     })
+
+    return { userSync, inviteSync }
+  }
+
+  try {
+    const { userSync, inviteSync } = await syncOnce()
     res.json({
       message: '账号同步成功',
       account: inviteSync.account,
@@ -1119,10 +1126,45 @@ router.post('/:id/sync-user-count', async (req, res) => {
       users: userSync.users
     })
   } catch (error) {
-    console.error('同步账号人数错误:', error)
+    let finalError = error
 
-    if (error instanceof AccountSyncError || error.status) {
-      return res.status(error.status || 500).json({ error: error.message })
+    const status = Number(finalError?.status || 0)
+    const message = finalError?.message ? String(finalError.message) : ''
+
+    const isBannedOrDeactivated =
+      message.includes('account_deactivated') ||
+      message.includes('已自动标记为封号') ||
+      message.includes('封号')
+
+    if (status === 401 && !isBannedOrDeactivated && Number.isFinite(accountId) && accountId > 0) {
+      try {
+        const db = await getDatabase()
+        const refreshResult = db.exec('SELECT refresh_token FROM gpt_accounts WHERE id = ?', [accountId])
+        const storedRefreshToken = refreshResult?.[0]?.values?.[0]?.[0]
+        const normalizedRefreshToken = String(storedRefreshToken || '').trim()
+
+        if (normalizedRefreshToken) {
+          const refreshedTokens = await refreshAccessTokenWithRefreshToken(normalizedRefreshToken)
+          await persistAccountTokens(db, accountId, refreshedTokens)
+
+          const { userSync, inviteSync } = await syncOnce()
+          return res.json({
+            message: '账号同步成功',
+            account: inviteSync.account,
+            syncedUserCount: userSync.syncedUserCount,
+            inviteCount: inviteSync.inviteCount,
+            users: userSync.users
+          })
+        }
+      } catch (retryError) {
+        finalError = retryError
+      }
+    }
+
+    console.error('同步账号人数错误:', finalError)
+
+    if (finalError instanceof AccountSyncError || finalError?.status) {
+      return res.status(finalError.status || 500).json({ error: finalError.message })
     }
 
     res.status(500).json({ error: '内部服务器错误' })

@@ -1074,6 +1074,7 @@ const applySyncResultToState = (result: SyncUserCountResponse) => {
         : current.inviteCount
     accounts.value[index] = {
       ...current,
+      ...result.account,
       userCount: result.syncedUserCount,
       inviteCount: typeof nextInviteCount === 'number' ? nextInviteCount : current.inviteCount,
       updatedAt: result.account.updatedAt
