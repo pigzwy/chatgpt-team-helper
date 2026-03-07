@@ -12,15 +12,12 @@ export async function getMasterRedemptionSettings() {
     WHERE config_key = 'master_redemption_code'
   `)
 
-  let code = ''
-  if (result.length > 0 && result[0].values.length > 0) {
-    code = String(result[0].values[0][1] || '').trim()
+  const hasStoredConfig = result.length > 0 && result[0].values.length > 0
+  if (hasStoredConfig) {
+    return { code: String(result[0].values[0][1] || '').trim() }
   }
 
-  // 回退到环境变量
-  if (!code) {
-    code = String(process.env.MASTER_REDEMPTION_CODE || '').trim()
-  }
+  const code = String(process.env.MASTER_REDEMPTION_CODE || '').trim()
 
   return { code }
 }

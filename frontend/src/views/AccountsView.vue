@@ -138,7 +138,6 @@ interface SessionJsonPreview {
   email: string
   chatgptAccountId: string
   planType: string
-  expireAt: string
   tokenPreview: string
 }
 const importPreview = ref<SessionJsonPreview | null>(null)
@@ -161,8 +160,6 @@ const parseSessionJson = () => {
     const accessToken = session?.accessToken
     const chatgptAccountId = session?.account?.id
     const planType = session?.account?.planType || ''
-    const expiresRaw = session?.expires
-
     if (!email) {
       importError.value = '缺少 user.email 字段'
       return
@@ -176,31 +173,10 @@ const parseSessionJson = () => {
       return
     }
 
-    // 转换 expires（UTC ISO）为北京时间 YYYY/MM/DD HH:mm:ss
-    let expireAt = ''
-    if (expiresRaw) {
-      const d = new Date(expiresRaw)
-      if (!isNaN(d.getTime())) {
-        const parts = new Intl.DateTimeFormat('zh-CN', {
-          timeZone: 'Asia/Shanghai',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false
-        }).formatToParts(d)
-        const get = (type: string) => parts.find(p => p.type === type)?.value || ''
-        expireAt = `${get('year')}/${get('month')}/${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`
-      }
-    }
-
     importPreview.value = {
       email,
       chatgptAccountId,
       planType,
-      expireAt,
       tokenPreview: accessToken.slice(0, 20) + '...' + accessToken.slice(-10)
     }
   } catch {
@@ -219,8 +195,7 @@ const handleImportSubmit = async () => {
       email: session.user.email.trim(),
       token: session.accessToken,
       chatgptAccountId: session.account.id,
-      userCount: 1,
-      expireAt: importPreview.value.expireAt
+      userCount: 1
     }
 
     await gptAccountService.create(payload)
@@ -2443,6 +2418,9 @@ const handleInviteSubmit = async () => {
             <Label class="text-sm text-gray-600 mb-1.5 block">
               粘贴 <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">chatgpt.com/api/auth/session</code> 返回的 JSON
             </Label>
+            <p class="mb-2 text-xs text-gray-500">
+              系统不会使用 <code class="bg-gray-100 px-1 rounded">session.expires</code> 作为账号有效期；如需补齐到期时间，请在导入后校验 Token 或手动编辑。
+            </p>
             <textarea
               v-model="importJsonText"
               rows="8"
@@ -2469,10 +2447,6 @@ const handleInviteSubmit = async () => {
             <div class="flex justify-between">
               <span class="text-gray-500">套餐类型</span>
               <span class="text-gray-900">{{ importPreview.planType || '-' }}</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-gray-500">过期时间</span>
-              <span class="text-gray-900">{{ importPreview.expireAt || '-' }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">Token</span>

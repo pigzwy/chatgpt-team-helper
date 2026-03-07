@@ -299,19 +299,18 @@ export async function redeemCodeInternal({
     throw new RedemptionError(400, '请输入有效的邮箱地址')
   }
 
-  const sanitizedCode = (code || '').trim().toUpperCase()
-  if (!sanitizedCode) {
+  const inputCode = (code || '').trim().toUpperCase()
+  if (!inputCode) {
     throw new RedemptionError(400, '请输入兑换码')
   }
 
-  if (!skipCodeFormatValidation && !CODE_REGEX.test(sanitizedCode)) {
-    throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
-  }
+  const db = await getDatabase()
+  let resolvedCode = inputCode
 
   // 万能兑换码逻辑：如果输入的是万能码，从码池自动分配一个未使用的兑换码
   const masterSettings = await getMasterRedemptionSettings()
   const masterCode = masterSettings.code ? String(masterSettings.code).trim().toUpperCase() : ''
-  if (masterCode && sanitizedCode === masterCode) {
+  if (masterCode && inputCode === masterCode) {
     const poolResult = db.exec(`
       SELECT code FROM redemption_codes
       WHERE is_redeemed = 0
@@ -326,13 +325,13 @@ export async function redeemCodeInternal({
       throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
     }
 
-    sanitizedCode = poolResult[0].values[0][0]
+    resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
+  } else if (!skipCodeFormatValidation && !CODE_REGEX.test(inputCode)) {
+    throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
   }
 
   const requestedChannel = normalizeChannel(channel, 'common')
   const normalizedRedeemerUid = redeemerUid != null ? String(redeemerUid).trim() : ''
-
-  const db = await getDatabase()
   const { byKey: channelsByKey } = await getChannels(db)
   const requestedChannelConfig = channelsByKey.get(requestedChannel) || null
 
@@ -354,7 +353,7 @@ export async function redeemCodeInternal({
              reserved_for_order_no, reserved_for_order_email, order_type
       FROM redemption_codes
       WHERE code = ?
-    `, [sanitizedCode])
+    `, [resolvedCode])
 
   if (codeResult.length === 0 || codeResult[0].values.length === 0) {
     throw new RedemptionError(404, '兑换码不存在或已失效')

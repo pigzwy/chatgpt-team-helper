@@ -112,6 +112,56 @@ const parseExpireAtToMs = (value) => {
   return Number.isNaN(parsed) ? null : parsed
 }
 
+const findAccountConflict = (db, { email, chatgptAccountId, excludeId = null } = {}) => {
+  const normalizedEmail = normalizeEmail(email)
+  const normalizedChatgptAccountId = String(chatgptAccountId ?? '').trim()
+  const excludedId = excludeId == null ? null : Number(excludeId)
+
+  if (normalizedChatgptAccountId) {
+    const result = excludedId == null
+      ? db.exec('SELECT id, email FROM gpt_accounts WHERE chatgpt_account_id = ? LIMIT 1', [normalizedChatgptAccountId])
+      : db.exec('SELECT id, email FROM gpt_accounts WHERE chatgpt_account_id = ? AND id != ? LIMIT 1', [normalizedChatgptAccountId, excludedId])
+
+    if (result[0]?.values?.length) {
+      return {
+        field: 'chatgptAccountId',
+        id: Number(result[0].values[0][0]),
+        email: String(result[0].values[0][1] || '')
+      }
+    }
+  }
+
+  if (normalizedEmail) {
+    const result = excludedId == null
+      ? db.exec('SELECT id, email FROM gpt_accounts WHERE lower(email) = ? LIMIT 1', [normalizedEmail])
+      : db.exec('SELECT id, email FROM gpt_accounts WHERE lower(email) = ? AND id != ? LIMIT 1', [normalizedEmail, excludedId])
+
+    if (result[0]?.values?.length) {
+      return {
+        field: 'email',
+        id: Number(result[0].values[0][0]),
+        email: String(result[0].values[0][1] || '')
+      }
+    }
+  }
+
+  return null
+}
+
+const buildAccountConflictResponse = (conflict) => {
+  if (!conflict) return null
+  if (conflict.field === 'chatgptAccountId') {
+    return {
+      error: 'Account already exists',
+      message: `该 ChatGPT ID 已存在（账号 #${conflict.id}，邮箱：${conflict.email || '-'}）`
+    }
+  }
+  return {
+    error: 'Account already exists',
+    message: `该邮箱已存在（账号 #${conflict.id}，邮箱：${conflict.email || '-'}）`
+  }
+}
+
 const mapWithConcurrency = async (items, concurrency, fn) => {
   const list = Array.isArray(items) ? items : []
   const limit = Math.max(1, Number(concurrency) || 1)
@@ -738,6 +788,14 @@ router.post('/', async (req, res) => {
     const normalizedEmail = normalizeEmail(email)
 
     const db = await getDatabase()
+    const conflict = findAccountConflict(db, {
+      email: normalizedEmail,
+      chatgptAccountId: normalizedChatgptAccountId
+    })
+
+    if (conflict) {
+      return res.status(409).json(buildAccountConflictResponse(conflict))
+    }
 
     // 设置默认人数为1而不是0
     const finalUserCount = userCount !== undefined ? userCount : 1
@@ -882,6 +940,16 @@ router.put('/:id', async (req, res) => {
     const checkResult = db.exec('SELECT id, email FROM gpt_accounts WHERE id = ?', [req.params.id])
     if (checkResult.length === 0 || checkResult[0].values.length === 0) {
       return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const conflict = findAccountConflict(db, {
+      email,
+      chatgptAccountId: normalizedChatgptAccountId,
+      excludeId: req.params.id
+    })
+
+    if (conflict) {
+      return res.status(409).json(buildAccountConflictResponse(conflict))
     }
 
     const existingEmail = checkResult[0].values[0][1]

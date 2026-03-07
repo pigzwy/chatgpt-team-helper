@@ -535,7 +535,10 @@ export interface AppRuntimeConfig {
   }
   openAccountsEnabled?: boolean
   openAccountsMaintenanceMessage?: string | null
-  masterRedemptionCode?: string | null
+}
+
+export interface MasterRedemptionConfig {
+  code: string
 }
 
 export interface PurchaseMeta {
@@ -1556,7 +1559,12 @@ export const configService = {
     return response.data
   },
 
-  async updateMasterRedemptionCode(code: string): Promise<{ message: string }> {
+  async getMasterRedemptionCode(): Promise<MasterRedemptionConfig> {
+    const response = await api.get('/config/master-redemption')
+    return response.data
+  },
+
+  async updateMasterRedemptionCode(code: string): Promise<{ message: string; code: string }> {
     const response = await api.patch('/config/master-redemption', { code })
     return response.data
   }

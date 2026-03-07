@@ -573,8 +573,8 @@ const toggleShowTelegramBotToken = () => {
 // 万能兑换码配置加载和保存
 const loadMasterRedemptionCode = async () => {
   try {
-    const config = await configService.getRuntimeConfig()
-    masterRedemptionCode.value = config.masterRedemptionCode || ''
+    const config = await configService.getMasterRedemptionCode()
+    masterRedemptionCode.value = config.code || ''
   } catch (err: any) {
     console.error('Load master redemption code error:', err)
   }
@@ -584,24 +584,17 @@ const saveMasterRedemptionCode = async () => {
   masterRedemptionError.value = ''
   masterRedemptionSuccess.value = ''
 
-  if (!masterRedemptionCode.value) {
-    masterRedemptionError.value = '请输入万能兑换码'
-    return
-  }
-
-  // 只检查长度，不限制格式
-  if (masterRedemptionCode.value.length < 4) {
+  const normalizedCode = masterRedemptionCode.value.trim()
+  if (normalizedCode && normalizedCode.length < 4) {
     masterRedemptionError.value = '万能兑换码至少需要 4 个字符'
     return
   }
 
   masterRedemptionLoading.value = true
   try {
-    await configService.updateMasterRedemptionCode(masterRedemptionCode.value)
-    masterRedemptionSuccess.value = '万能兑换码已更新'
-    // 重新加载配置以更新 store
-    const config = await configService.getRuntimeConfig()
-    appConfigStore.masterRedemptionCode = config.masterRedemptionCode || null
+    const result = await configService.updateMasterRedemptionCode(normalizedCode)
+    masterRedemptionCode.value = result.code || ''
+    masterRedemptionSuccess.value = result.code ? '万能兑换码已更新' : '万能兑换码已禁用'
   } catch (err: any) {
     masterRedemptionError.value = err.response?.data?.error || '更新失败，请重试'
   } finally {

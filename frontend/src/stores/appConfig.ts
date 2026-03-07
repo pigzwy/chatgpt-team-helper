@@ -24,7 +24,6 @@ export const useAppConfigStore = defineStore('app-config', () => {
   const channels = ref<Channel[]>([])
   const openAccountsEnabled = ref(true)
   const openAccountsMaintenanceMessage = ref(DEFAULT_OPEN_ACCOUNTS_MAINTENANCE_MESSAGE)
-  const masterRedemptionCode = ref<string | null>(null)
   const features = ref<FeatureFlags>({
     xhs: true,
     xianyu: true,
@@ -77,9 +76,6 @@ export const useAppConfigStore = defineStore('app-config', () => {
     if (Array.isArray(config.channels)) {
       channels.value = config.channels as Channel[]
     }
-    if ('masterRedemptionCode' in config) {
-      masterRedemptionCode.value = config.masterRedemptionCode || null
-    }
   }
 
   const loadConfig = async () => {
@@ -103,7 +99,6 @@ export const useAppConfigStore = defineStore('app-config', () => {
     channels,
     openAccountsEnabled,
     openAccountsMaintenanceMessage,
-    masterRedemptionCode,
     features,
     resolvedTurnstileSiteKey,
     resolvedTurnstileEnabled,
