@@ -29,8 +29,8 @@ jobs:
           context: .
           push: true
           tags: |
-            pigzwy/chatgpt-team-helper:latest
-            pigzwy/chatgpt-team-helper:${{ github.sha }}
+            llpig/chatgpt-team-helper:latest
+            llpig/chatgpt-team-helper:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
