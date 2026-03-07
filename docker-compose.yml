@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   app:
-    image: ghcr.io/kylsky/chatgpt-team-helper:latest
-    # 或使用本地构建: image: auto-gpt-team:latest
+    image: pigzwy/chatgpt-team-helper:latest
+    # 原始镜像: ghcr.io/kylsky/chatgpt-team-helper:latest
     container_name: auto-gpt-team
     ports:
       - "0.0.0.0:29527:5173"
