@@ -6,6 +6,7 @@ import { apiKeyAuth } from '../middleware/api-key-auth.js'
 import { verifyLinuxDoSessionToken } from '../middleware/linuxdo-session.js'
 import { syncAccountInviteCount, syncAccountUserCount } from '../services/account-sync.js'
 import { inviteUserToChatGPTTeam } from '../services/chatgpt-invite.js'
+import { getMasterRedemptionSettings } from '../utils/master-redemption-settings.js'
 import {
   getXhsConfig,
   getXhsOrderByNumber,
@@ -305,6 +306,27 @@ export async function redeemCodeInternal({
 
   if (!skipCodeFormatValidation && !CODE_REGEX.test(sanitizedCode)) {
     throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
+  }
+
+  // 万能兑换码逻辑：如果输入的是万能码，从码池自动分配一个未使用的兑换码
+  const masterSettings = await getMasterRedemptionSettings()
+  const masterCode = masterSettings.code ? String(masterSettings.code).trim().toUpperCase() : ''
+  if (masterCode && sanitizedCode === masterCode) {
+    const poolResult = db.exec(`
+      SELECT code FROM redemption_codes
+      WHERE is_redeemed = 0
+        AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
+        AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
+        AND (reserved_for_order_email IS NULL OR reserved_for_order_email = '')
+      ORDER BY created_at ASC
+      LIMIT 1
+    `)
+
+    if (poolResult.length === 0 || poolResult[0].values.length === 0) {
+      throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
+    }
+
+    sanitizedCode = poolResult[0].values[0][0]
   }
 
   const requestedChannel = normalizeChannel(channel, 'common')

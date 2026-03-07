@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import AppleNativeDateTimeInput from '@/components/ui/apple/NativeDateTimeInput.vue'
-import { Plus, Eye, EyeOff, RefreshCw, Ban, FilePenLine, Trash2, AlertTriangle, X, FolderOpen, Search } from 'lucide-vue-next'
+import { Plus, Eye, EyeOff, RefreshCw, Ban, FilePenLine, Trash2, AlertTriangle, X, FolderOpen, Search, Upload } from 'lucide-vue-next'
 
 const router = useRouter()
 const accounts = ref<GptAccount[]>([])
@@ -128,6 +128,119 @@ const formData = ref<CreateGptAccountDto>({
   oaiDeviceId: '',
   expireAt: ''
 })
+
+// 导入 Session JSON 相关状态
+const showImportDialog = ref(false)
+const importJsonText = ref('')
+const importSubmitting = ref(false)
+
+interface SessionJsonPreview {
+  email: string
+  chatgptAccountId: string
+  planType: string
+  expireAt: string
+  tokenPreview: string
+}
+const importPreview = ref<SessionJsonPreview | null>(null)
+const importError = ref('')
+
+const parseSessionJson = () => {
+  importError.value = ''
+  importPreview.value = null
+
+  const raw = importJsonText.value.trim()
+  if (!raw) {
+    importError.value = '请粘贴 Session JSON'
+    return
+  }
+
+  try {
+    const session = JSON.parse(raw)
+
+    const email = session?.user?.email
+    const accessToken = session?.accessToken
+    const chatgptAccountId = session?.account?.id
+    const planType = session?.account?.planType || ''
+    const expiresRaw = session?.expires
+
+    if (!email) {
+      importError.value = '缺少 user.email 字段'
+      return
+    }
+    if (!accessToken) {
+      importError.value = '缺少 accessToken 字段'
+      return
+    }
+    if (!chatgptAccountId) {
+      importError.value = '缺少 account.id 字段'
+      return
+    }
+
+    // 转换 expires（UTC ISO）为北京时间 YYYY/MM/DD HH:mm:ss
+    let expireAt = ''
+    if (expiresRaw) {
+      const d = new Date(expiresRaw)
+      if (!isNaN(d.getTime())) {
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        }).formatToParts(d)
+        const get = (type: string) => parts.find(p => p.type === type)?.value || ''
+        expireAt = `${get('year')}/${get('month')}/${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`
+      }
+    }
+
+    importPreview.value = {
+      email,
+      chatgptAccountId,
+      planType,
+      expireAt,
+      tokenPreview: accessToken.slice(0, 20) + '...' + accessToken.slice(-10)
+    }
+  } catch {
+    importError.value = 'JSON 格式错误，请检查粘贴内容'
+  }
+}
+
+const handleImportSubmit = async () => {
+  if (!importPreview.value) return
+
+  try {
+    importSubmitting.value = true
+    const session = JSON.parse(importJsonText.value.trim())
+
+    const payload: CreateGptAccountDto = {
+      email: session.user.email.trim(),
+      token: session.accessToken,
+      chatgptAccountId: session.account.id,
+      userCount: 1,
+      expireAt: importPreview.value.expireAt
+    }
+
+    await gptAccountService.create(payload)
+    showSuccessToast('账号导入成功')
+    await loadAccounts()
+    closeImportDialog()
+  } catch (err: any) {
+    const msg = err.response?.data?.error || err.response?.data?.message || err.message || '导入失败'
+    showErrorToast(msg)
+  } finally {
+    importSubmitting.value = false
+  }
+}
+
+const closeImportDialog = () => {
+  showImportDialog.value = false
+  importJsonText.value = ''
+  importPreview.value = null
+  importError.value = ''
+}
 
 const checkingAccessToken = ref(false)
 const checkedChatgptAccounts = ref<ChatgptAccountCheckInfo[]>([])
@@ -1325,6 +1438,14 @@ const handleInviteSubmit = async () => {
           检查
         </Button>
         <Button
+          class="bg-white border-gray-200 text-gray-700 hover:bg-gray-50 h-10 rounded-xl px-4"
+          :disabled="loading"
+          @click="showImportDialog = true"
+        >
+          <Upload class="w-4 h-4 mr-2" />
+          导入
+        </Button>
+        <Button
           @click="showDialog = true"
           class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
         >
@@ -2307,6 +2428,78 @@ const handleInviteSubmit = async () => {
           <p class="text-sm text-gray-600 font-medium">正在同步成员信息...</p>
         </div>
       </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 导入 Session JSON 对话框 -->
+    <Dialog v-model:open="showImportDialog">
+      <DialogContent class="sm:max-w-lg max-h-[90dvh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>导入 ChatGPT Session</DialogTitle>
+        </DialogHeader>
+
+        <div class="flex-1 min-h-0 flex flex-col gap-4 py-2">
+          <div>
+            <Label class="text-sm text-gray-600 mb-1.5 block">
+              粘贴 <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">chatgpt.com/api/auth/session</code> 返回的 JSON
+            </Label>
+            <textarea
+              v-model="importJsonText"
+              rows="8"
+              class="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+              placeholder='{"user":{"email":"..."},"accessToken":"...","account":{"id":"..."},...}'
+              @input="importPreview = null; importError = ''"
+            />
+          </div>
+
+          <div v-if="importError" class="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-2.5">
+            {{ importError }}
+          </div>
+
+          <div v-if="importPreview" class="bg-gray-50 rounded-xl p-4 space-y-2 text-sm">
+            <div class="font-medium text-gray-900 mb-2">解析结果</div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">邮箱</span>
+              <span class="text-gray-900 font-medium">{{ importPreview.email }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">ChatGPT ID</span>
+              <span class="text-gray-900 font-mono text-xs">{{ importPreview.chatgptAccountId }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">套餐类型</span>
+              <span class="text-gray-900">{{ importPreview.planType || '-' }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">过期时间</span>
+              <span class="text-gray-900">{{ importPreview.expireAt || '-' }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">Token</span>
+              <span class="text-gray-900 font-mono text-xs">{{ importPreview.tokenPreview }}</span>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter class="flex gap-2 pt-2">
+          <Button variant="outline" class="rounded-xl" @click="closeImportDialog">取消</Button>
+          <Button
+            v-if="!importPreview"
+            class="rounded-xl bg-blue-600 hover:bg-blue-700 text-white"
+            :disabled="!importJsonText.trim()"
+            @click="parseSessionJson"
+          >
+            解析
+          </Button>
+          <Button
+            v-else
+            class="rounded-xl bg-black hover:bg-gray-800 text-white"
+            :disabled="importSubmitting"
+            @click="handleImportSubmit"
+          >
+            {{ importSubmitting ? '导入中...' : '确认导入' }}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   </div>

@@ -535,6 +535,7 @@ export interface AppRuntimeConfig {
   }
   openAccountsEnabled?: boolean
   openAccountsMaintenanceMessage?: string | null
+  masterRedemptionCode?: string | null
 }
 
 export interface PurchaseMeta {
@@ -1552,6 +1553,11 @@ export const accountRecoveryAdminService = {
 export const configService = {
   async getRuntimeConfig(): Promise<AppRuntimeConfig> {
     const response = await api.get('/config/runtime')
+    return response.data
+  },
+
+  async updateMasterRedemptionCode(code: string): Promise<{ message: string }> {
+    const response = await api.patch('/config/master-redemption', { code })
     return response.data
   }
 }

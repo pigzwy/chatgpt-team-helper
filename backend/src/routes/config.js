@@ -2,6 +2,9 @@ import express from 'express'
 import { getTurnstileSettings } from '../utils/turnstile-settings.js'
 import { getFeatureFlags } from '../utils/feature-flags.js'
 import { getChannels } from '../utils/channels.js'
+import { getMasterRedemptionSettings } from '../utils/master-redemption-settings.js'
+import { authenticateToken } from '../middleware/auth.js'
+import { requireMenu } from '../middleware/rbac.js'
 
 const router = express.Router()
 
@@ -45,6 +48,8 @@ router.get('/runtime', async (req, res) => {
         updatedAt: channel.updatedAt,
       }))
 
+    const masterRedemptionSettings = await getMasterRedemptionSettings()
+
     res.json({
       timezone,
       locale,
@@ -53,11 +58,24 @@ router.get('/runtime', async (req, res) => {
       features,
       channels,
       openAccountsEnabled,
-      openAccountsMaintenanceMessage: openAccountsEnabled ? null : getOpenAccountsMaintenanceMessage()
+      openAccountsMaintenanceMessage: openAccountsEnabled ? null : getOpenAccountsMaintenanceMessage(),
+      masterRedemptionCode: masterRedemptionSettings.code || null
     })
   } catch (error) {
     console.error('[Config] runtime error:', error)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/master-redemption', authenticateToken, requireMenu('system_settings'), async (req, res) => {
+  try {
+    const { code } = req.body || {}
+    const { updateMasterRedemptionSettings } = await import('../utils/master-redemption-settings.js')
+    await updateMasterRedemptionSettings({ code })
+    res.json({ message: '万能兑换码已更新' })
+  } catch (error) {
+    console.error('[Config] update master redemption error:', error)
+    res.status(500).json({ error: '更新失败' })
   }
 })
 

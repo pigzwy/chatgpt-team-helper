@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
-import { authService, userService, adminService, versionService, purchaseService } from '@/services/api'
+import { authService, userService, adminService, versionService, purchaseService, configService } from '@/services/api'
 import type { VersionInfo, LatestVersionInfo, Channel, PurchaseProduct, PurchaseMeta, PurchaseOrderType } from '@/services/api'
 import { useAppConfigStore } from '@/stores/appConfig'
 import {
@@ -79,6 +79,12 @@ const apiKeyError = ref('')
 const apiKeySuccess = ref('')
 const apiKeyLoading = ref(false)
 const showApiKey = ref(false) // 控制显示/隐藏API密钥
+
+// 万能兑换码配置（仅超级管理员）
+const masterRedemptionCode = ref('')
+const masterRedemptionError = ref('')
+const masterRedemptionSuccess = ref('')
+const masterRedemptionLoading = ref(false)
 
 const isSuperAdmin = computed(() => {
   const user = authService.getCurrentUser()
@@ -239,6 +245,7 @@ onMounted(async () => {
     loadZpaySettings(),
     loadTurnstileSettings(),
     loadTelegramSettings(),
+    loadMasterRedemptionCode(),
   ])
 })
 
@@ -561,6 +568,45 @@ const toggleShowTurnstileSecretKey = () => {
 
 const toggleShowTelegramBotToken = () => {
   showTelegramBotToken.value = !showTelegramBotToken.value
+}
+
+// 万能兑换码配置加载和保存
+const loadMasterRedemptionCode = async () => {
+  try {
+    const config = await configService.getRuntimeConfig()
+    masterRedemptionCode.value = config.masterRedemptionCode || ''
+  } catch (err: any) {
+    console.error('Load master redemption code error:', err)
+  }
+}
+
+const saveMasterRedemptionCode = async () => {
+  masterRedemptionError.value = ''
+  masterRedemptionSuccess.value = ''
+
+  if (!masterRedemptionCode.value) {
+    masterRedemptionError.value = '请输入万能兑换码'
+    return
+  }
+
+  // 只检查长度，不限制格式
+  if (masterRedemptionCode.value.length < 4) {
+    masterRedemptionError.value = '万能兑换码至少需要 4 个字符'
+    return
+  }
+
+  masterRedemptionLoading.value = true
+  try {
+    await configService.updateMasterRedemptionCode(masterRedemptionCode.value)
+    masterRedemptionSuccess.value = '万能兑换码已更新'
+    // 重新加载配置以更新 store
+    const config = await configService.getRuntimeConfig()
+    appConfigStore.masterRedemptionCode = config.masterRedemptionCode || null
+  } catch (err: any) {
+    masterRedemptionError.value = err.response?.data?.error || '更新失败，请重试'
+  } finally {
+    masterRedemptionLoading.value = false
+  }
 }
 
 const loadEmailDomainWhitelist = async () => {
@@ -1246,6 +1292,46 @@ const savePointsWithdrawSettings = async () => {
               <li>请勿将密钥泄露给他人。</li>
             </ul>
           </div>
+        </CardContent>
+      </Card>
+
+      <!-- 万能兑换码（仅超级管理员） -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">万能兑换码</CardTitle>
+          <CardDescription class="text-gray-500">管理员专用，使用此码兑换时自动从兑换码池分配可用兑换码</CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="space-y-2">
+            <Label for="masterRedemptionCode" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">万能兑换码</Label>
+            <Input
+              id="masterRedemptionCode"
+              v-model="masterRedemptionCode"
+              type="text"
+              placeholder="例如：ADMIN-2024-MAGIC"
+              class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-100 focus:border-emerald-500 transition-all font-mono text-sm uppercase"
+            />
+            <p class="text-xs text-gray-400">留空则禁用万能兑换码功能。可自定义任意格式</p>
+          </div>
+
+          <div v-if="masterRedemptionError" class="rounded-xl bg-red-50 p-4 flex items-center gap-3 text-red-600 border border-red-100">
+            <AlertCircle class="w-5 h-5 flex-shrink-0" />
+            <span class="text-sm font-medium">{{ masterRedemptionError }}</span>
+          </div>
+
+          <div v-if="masterRedemptionSuccess" class="rounded-xl bg-green-50 p-4 flex items-center gap-3 text-green-600 border border-green-100">
+            <CheckCircle2 class="w-5 h-5 flex-shrink-0" />
+            <span class="text-sm font-medium">{{ masterRedemptionSuccess }}</span>
+          </div>
+
+          <Button
+            type="button"
+            @click="saveMasterRedemptionCode"
+            :disabled="masterRedemptionLoading"
+            class="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-200"
+          >
+            {{ masterRedemptionLoading ? '保存中...' : '保存万能兑换码' }}
+          </Button>
         </CardContent>
       </Card>
 
