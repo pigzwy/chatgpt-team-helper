@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { authService, userService, adminService, versionService, purchaseService, configService } from '@/services/api'
 import type { VersionInfo, LatestVersionInfo, Channel, PurchaseProduct, PurchaseMeta, PurchaseOrderType } from '@/services/api'
 import { useAppConfigStore } from '@/stores/appConfig'
@@ -29,10 +29,21 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnnouncementAdminPanel from '@/components/AnnouncementAdminPanel.vue'
-import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-vue-next'
+import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw, Settings, CreditCard, Link, Mail, Shield } from 'lucide-vue-next'
 
 const teleportReady = ref(false)
 const activeTab = ref<'settings' | 'announcements'>('settings')
+const settingsSubTab = ref('general')
+
+const settingsNav = [
+  { id: 'general', label: '基础设置', desc: '功能开关、白名单与补录', icon: Settings },
+  { id: 'billing', label: '支付与财务', desc: '商品、支付通道与提现', icon: CreditCard },
+  { id: 'integrations', label: '第三方集成', desc: 'OAuth、验证与机器人', icon: Link },
+  { id: 'notifications', label: '邮件与通知', desc: 'SMTP 告警邮件配置', icon: Mail },
+  { id: 'security', label: '核心与安全', desc: 'API 密钥与渠道管理', icon: Shield },
+]
+
+const activeNavItem = computed(() => settingsNav.find(n => n.id === settingsSubTab.value))
 
 // 版本检查相关
 const versionLoading = ref(false)
@@ -103,6 +114,14 @@ const featureFlags = ref({
 const featureFlagsError = ref('')
 const featureFlagsSuccess = ref('')
 const featureFlagsLoading = ref(false)
+
+// 补录设置（仅超级管理员）
+const accountRecoveryForceTodayCodes = ref(false)
+const accountRecoveryCodeWindowDays = ref('7')
+const accountRecoveryRequireExpireCoverDeadline = ref(false)
+const accountRecoverySettingsError = ref('')
+const accountRecoverySettingsSuccess = ref('')
+const accountRecoverySettingsLoading = ref(false)
 
 // 渠道管理（仅超级管理员）
 const channels = ref<Channel[]>([])
@@ -234,6 +253,7 @@ onMounted(async () => {
   await loadApiKey()
   await Promise.all([
     loadFeatureFlags(),
+    loadAccountRecoverySettings(),
     loadChannels(),
     loadPurchaseProducts(),
     loadPurchaseAvailability(),
@@ -302,6 +322,61 @@ const saveFeatureFlags = async () => {
     featureFlagsError.value = err.response?.data?.error || '保存失败'
   } finally {
     featureFlagsLoading.value = false
+  }
+}
+
+watch(accountRecoveryForceTodayCodes, (next) => {
+  if (!next) {
+    accountRecoveryRequireExpireCoverDeadline.value = false
+  }
+  if (!accountRecoveryCodeWindowDays.value.trim()) {
+    accountRecoveryCodeWindowDays.value = '7'
+  }
+})
+
+const loadAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  try {
+    const response = await adminService.getAccountRecoverySettings()
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '加载补录设置失败'
+  }
+}
+
+const saveAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  accountRecoverySettingsLoading.value = true
+  try {
+    const parsedDays = Number.parseInt(accountRecoveryCodeWindowDays.value, 10)
+    const codeWindowDays = Number.isFinite(parsedDays) ? Math.max(1, Math.min(365, parsedDays)) : 7
+    const settingsPayload = {
+      forceTodayCodes: accountRecoveryForceTodayCodes.value,
+      codeWindowDays,
+      requireExpireCoverDeadline: accountRecoveryForceTodayCodes.value ? accountRecoveryRequireExpireCoverDeadline.value : false
+    }
+    const response = await adminService.updateAccountRecoverySettings({ settings: settingsPayload })
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+    accountRecoverySettingsSuccess.value = '已保存'
+    setTimeout(() => (accountRecoverySettingsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '保存失败'
+  } finally {
+    accountRecoverySettingsLoading.value = false
   }
 }
 
@@ -379,6 +454,20 @@ const toggleChannelActive = async (channel: Channel) => {
     setTimeout(() => (channelsSuccess.value = ''), 3000)
   } catch (err: any) {
     channelsError.value = err.response?.data?.error || '更新失败'
+  }
+}
+
+const deleteChannel = async (channel: Channel) => {
+  if (!confirm(`确定要删除渠道「${channel.name || channel.key}」吗？此操作不可撤销。`)) return
+  channelsError.value = ''
+  channelsSuccess.value = ''
+  try {
+    await adminService.deleteChannel(channel.key)
+    await loadChannels()
+    channelsSuccess.value = '已删除'
+    setTimeout(() => (channelsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    channelsError.value = err.response?.data?.error || '删除失败'
   }
 }
 
@@ -483,16 +572,17 @@ const togglePurchaseProductActive = async (product: PurchaseProduct) => {
   }
 }
 
-const disablePurchaseProduct = async (product: PurchaseProduct) => {
+const deletePurchaseProduct = async (product: PurchaseProduct) => {
+  if (!confirm(`确定要删除商品「${product.productName || product.productKey}」吗？此操作不可撤销。`)) return
   purchaseProductsError.value = ''
   purchaseProductsSuccess.value = ''
   try {
     await adminService.deletePurchaseProduct(product.productKey)
     await Promise.all([loadPurchaseProducts(), loadPurchaseAvailability()])
-    purchaseProductsSuccess.value = '已下架'
+    purchaseProductsSuccess.value = '已删除'
     setTimeout(() => (purchaseProductsSuccess.value = ''), 3000)
   } catch (err: any) {
-    purchaseProductsError.value = err.response?.data?.error || '下架失败'
+    purchaseProductsError.value = err.response?.data?.error || '删除失败'
   }
 }
 
@@ -1194,7 +1284,6 @@ const savePointsWithdrawSettings = async () => {
     </Dialog>
 
     <TabsContent value="settings" class="mt-0">
-      <div class="grid gap-8 lg:grid-cols-2">
       <!-- 非超级管理员提示 -->
       <Card
         v-if="!isSuperAdmin"
@@ -1206,10 +1295,49 @@ const savePointsWithdrawSettings = async () => {
         </CardHeader>
       </Card>
 
-      <!-- API密钥管理 -->
+      <div v-else class="space-y-6">
+        <!-- 顶部分类导航 (sticky) -->
+        <div class="sticky -top-4 lg:-top-8 z-20 -mx-4 px-4 lg:-mx-8 lg:px-8 pt-4 lg:pt-8 pb-3 bg-[#F5F5F7]/90 backdrop-blur-md border-b border-gray-200/60">
+          <nav class="flex items-center gap-1.5 overflow-x-auto scrollbar-hide -mb-px">
+            <button
+              v-for="nav in settingsNav"
+              :key="nav.id"
+              @click="settingsSubTab = nav.id"
+              class="group relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all shrink-0"
+              :class="settingsSubTab === nav.id
+                ? 'text-blue-700 bg-blue-50'
+                : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'"
+            >
+              <component
+                :is="nav.icon"
+                class="w-4 h-4 shrink-0"
+                :class="settingsSubTab === nav.id ? 'text-blue-600' : 'text-gray-400 group-hover:text-gray-600'"
+              />
+              <span>{{ nav.label }}</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- 内容区 -->
+        <div class="space-y-6">
+          <!-- 当前分类标题 -->
+          <div class="flex items-center gap-3">
+            <div class="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-50 text-blue-600">
+              <component :is="activeNavItem?.icon" class="w-[18px] h-[18px]" />
+            </div>
+            <div>
+              <h2 class="text-base font-bold text-gray-900">{{ activeNavItem?.label }}</h2>
+              <p class="text-xs text-gray-500">{{ activeNavItem?.desc }}</p>
+            </div>
+          </div>
+
+          <!-- 卡片列表 -->
+          <div class="grid gap-6 lg:grid-cols-2">
+            <template v-if="settingsSubTab === 'security'">
+            <!-- API密钥管理 -->
       <Card
         v-if="isSuperAdmin"
-        class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col"
+        class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2"
       >
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <div class="flex items-center gap-3 mb-1">
@@ -1288,48 +1416,51 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <!-- 万能兑换码（仅超级管理员） -->
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
-        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
-          <CardTitle class="text-xl font-bold text-gray-900">万能兑换码</CardTitle>
-          <CardDescription class="text-gray-500">管理员专用，使用此码兑换时自动从兑换码池分配可用兑换码</CardDescription>
-        </CardHeader>
-        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
-          <div class="space-y-2">
-            <Label for="masterRedemptionCode" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">万能兑换码</Label>
-            <Input
-              id="masterRedemptionCode"
-              v-model="masterRedemptionCode"
-              type="text"
-              placeholder="例如：ADMIN-2024-MAGIC"
-              class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-100 focus:border-emerald-500 transition-all font-mono text-sm uppercase"
-            />
-            <p class="text-xs text-gray-400">留空则禁用万能兑换码功能。可自定义任意格式</p>
-          </div>
+            </template>
 
-          <div v-if="masterRedemptionError" class="rounded-xl bg-red-50 p-4 flex items-center gap-3 text-red-600 border border-red-100">
-            <AlertCircle class="w-5 h-5 flex-shrink-0" />
-            <span class="text-sm font-medium">{{ masterRedemptionError }}</span>
-          </div>
+            <template v-if="settingsSubTab === 'general'">
+              <!-- 万能兑换码（仅超级管理员） -->
+              <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+                <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+                  <CardTitle class="text-xl font-bold text-gray-900">万能兑换码</CardTitle>
+                  <CardDescription class="text-gray-500">管理员专用，使用此码兑换时自动从兑换码池分配可用兑换码</CardDescription>
+                </CardHeader>
+                <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+                  <div class="space-y-2">
+                    <Label for="masterRedemptionCode" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">万能兑换码</Label>
+                    <Input
+                      id="masterRedemptionCode"
+                      v-model="masterRedemptionCode"
+                      type="text"
+                      placeholder="例如：ADMIN-2024-MAGIC"
+                      class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-100 focus:border-emerald-500 transition-all font-mono text-sm uppercase"
+                    />
+                    <p class="text-xs text-gray-400">留空则禁用万能兑换码功能。可自定义任意格式</p>
+                  </div>
 
-          <div v-if="masterRedemptionSuccess" class="rounded-xl bg-green-50 p-4 flex items-center gap-3 text-green-600 border border-green-100">
-            <CheckCircle2 class="w-5 h-5 flex-shrink-0" />
-            <span class="text-sm font-medium">{{ masterRedemptionSuccess }}</span>
-          </div>
+                  <div v-if="masterRedemptionError" class="rounded-xl bg-red-50 p-4 flex items-center gap-3 text-red-600 border border-red-100">
+                    <AlertCircle class="w-5 h-5 flex-shrink-0" />
+                    <span class="text-sm font-medium">{{ masterRedemptionError }}</span>
+                  </div>
 
-          <Button
-            type="button"
-            @click="saveMasterRedemptionCode"
-            :disabled="masterRedemptionLoading"
-            class="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-200"
-          >
-            {{ masterRedemptionLoading ? '保存中...' : '保存万能兑换码' }}
-          </Button>
-        </CardContent>
-      </Card>
+                  <div v-if="masterRedemptionSuccess" class="rounded-xl bg-green-50 p-4 flex items-center gap-3 text-green-600 border border-green-100">
+                    <CheckCircle2 class="w-5 h-5 flex-shrink-0" />
+                    <span class="text-sm font-medium">{{ masterRedemptionSuccess }}</span>
+                  </div>
 
-      <!-- 邮箱后缀白名单 -->
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+                  <Button
+                    type="button"
+                    @click="saveMasterRedemptionCode"
+                    :disabled="masterRedemptionLoading"
+                    class="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-200"
+                  >
+                    {{ masterRedemptionLoading ? '保存中...' : '保存万能兑换码' }}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <!-- 邮箱后缀白名单 -->
+              <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">邮箱后缀白名单</CardTitle>
           <CardDescription class="text-gray-500">用于注册时校验邮箱域名（逗号分隔）。留空表示不限制。</CardDescription>
@@ -1450,7 +1581,89 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <!-- 渠道管理 -->
+      <!-- 补录设置 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">补录设置</CardTitle>
+          <CardDescription class="text-gray-500">
+            控制补录时可用兑换码的创建时间窗口，以及是否强制账号过期覆盖订单截止日。
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="space-y-3">
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">强制仅使用当天新创建的兑换码</p>
+                <p class="text-xs text-gray-500">关闭后默认使用近 7 天内创建的兑换码（可自定义）。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+            </div>
+
+            <div v-if="!accountRecoveryForceTodayCodes" class="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <Label for="accountRecoveryCodeWindowDays" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换码创建范围（天）</Label>
+              <Input
+                id="accountRecoveryCodeWindowDays"
+                v-model="accountRecoveryCodeWindowDays"
+                type="number"
+                min="1"
+                max="365"
+                placeholder="7"
+                class="h-11 bg-white border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
+              />
+              <p class="text-xs text-gray-400">例如 7 表示允许使用近 7 天内创建的补录码。</p>
+            </div>
+
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">要求账号过期时间覆盖订单截止日</p>
+                <p class="text-xs text-gray-500">仅在开启“强制当天码”时可用；否则后端会强制关闭。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryRequireExpireCoverDeadline"
+                :disabled="!accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+          </div>
+
+          <div v-if="accountRecoverySettingsError" class="rounded-xl bg-red-50 p-4 text-red-600 border border-red-100 text-sm font-medium">
+            {{ accountRecoverySettingsError }}
+          </div>
+
+          <div v-if="accountRecoverySettingsSuccess" class="rounded-xl bg-green-50 p-4 text-green-600 border border-green-100 text-sm font-medium">
+            {{ accountRecoverySettingsSuccess }}
+          </div>
+
+          <div class="flex flex-col sm:flex-row gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl"
+              @click="loadAccountRecoverySettings"
+            >
+              刷新
+            </Button>
+            <Button
+              type="button"
+              :disabled="accountRecoverySettingsLoading"
+              class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5"
+              @click="saveAccountRecoverySettings"
+            >
+              {{ accountRecoverySettingsLoading ? '保存中...' : '保存补录设置' }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+            </template>
+
+            <template v-if="settingsSubTab === 'security'">
+            <!-- 渠道管理 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">渠道管理</CardTitle>
@@ -1512,6 +1725,9 @@ const savePointsWithdrawSettings = async () => {
                       <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="toggleChannelActive(channel)">
                         {{ channel.isActive ? '停用' : '启用' }}
                       </Button>
+                      <Button v-if="!channel.isBuiltin" type="button" variant="outline" class="h-9 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl" @click="deleteChannel(channel)">
+                        删除
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -1524,7 +1740,10 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <!-- 支付商品管理 -->
+            </template>
+
+            <template v-if="settingsSubTab === 'billing'">
+            <!-- 支付商品管理 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">支付商品管理</CardTitle>
@@ -1586,10 +1805,10 @@ const savePointsWithdrawSettings = async () => {
                         编辑
                       </Button>
                       <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="togglePurchaseProductActive(product)">
-                        {{ product.isActive ? '下架' : '上架' }}
+                        {{ product.isActive ? '停用' : '启用' }}
                       </Button>
-                      <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="disablePurchaseProduct(product)">
-                        停用
+                      <Button type="button" variant="outline" class="h-9 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl" @click="deletePurchaseProduct(product)">
+                        删除
                       </Button>
                     </div>
                   </td>
@@ -1716,7 +1935,10 @@ const savePointsWithdrawSettings = async () => {
         </DialogContent>
       </Dialog>
 
-      <!-- SMTP / 第三方配置 -->
+            </template>
+
+            <template v-if="settingsSubTab === 'notifications'">
+            <!-- SMTP / 第三方配置 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">SMTP 邮件告警配置</CardTitle>
@@ -1847,8 +2069,11 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+      <template v-if="settingsSubTab === 'integrations'">
+      <!-- Linux DO OAuth 配置 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Linux DO OAuth 配置</CardTitle>
           <CardDescription class="text-gray-500">用于 Linux DO 登录/授权（保存后实时生效）。</CardDescription>
@@ -1932,7 +2157,7 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Linux DO Credit 配置</CardTitle>
           <CardDescription class="text-gray-500">用于 Credit 积分支付/回调验签（保存后实时生效）。</CardDescription>
@@ -2005,7 +2230,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'billing'">
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">ZPAY 支付配置</CardTitle>
@@ -2091,7 +2318,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'integrations'">
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Cloudflare Turnstile 配置</CardTitle>
@@ -2298,7 +2527,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'billing'">
       <!-- 积分提现设置 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
 	          <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
@@ -2372,6 +2603,9 @@ const savePointsWithdrawSettings = async () => {
             </div>
           </CardContent>
       </Card>
+      </template>
+          </div>
+        </div>
       </div>
     </TabsContent>
 

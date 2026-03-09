@@ -4,7 +4,7 @@ import { authenticateToken } from '../middleware/auth.js'
 import { requireMenu } from '../middleware/rbac.js'
 import { apiKeyAuth } from '../middleware/api-key-auth.js'
 import { verifyLinuxDoSessionToken } from '../middleware/linuxdo-session.js'
-import { syncAccountInviteCount, syncAccountUserCount } from '../services/account-sync.js'
+import { fetchAccountUsersList, syncAccountInviteCount, syncAccountUserCount } from '../services/account-sync.js'
 import { inviteUserToChatGPTTeam } from '../services/chatgpt-invite.js'
 import { getMasterRedemptionSettings } from '../utils/master-redemption-settings.js'
 import {
@@ -32,6 +32,7 @@ import { withLocks } from '../utils/locks.js'
 import { requireFeatureEnabled } from '../middleware/feature-flags.js'
 import { getChannels, normalizeChannelKey } from '../utils/channels.js'
 import { resolveOrderDeadlineMs, selectRecoveryCode } from '../services/account-recovery.js'
+import { getAccountRecoverySettings } from '../utils/account-recovery-settings.js'
 
 const router = express.Router()
 
@@ -52,6 +53,34 @@ const parseBoolean = (value, fallback) => {
 }
 const HISTORY_CODE_MIN_ACCOUNT_REMAINING_DAYS = 30
 const ACCOUNT_RECOVERY_WINDOW_DAYS = Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_WINDOW_DAYS, 30))
+const ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS = Math.min(
+  10,
+  Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS, 3))
+)
+const ACCOUNT_RECOVERY_ACCESS_CACHE_TTL_MS = Math.max(
+  0,
+  toInt(process.env.ACCOUNT_RECOVERY_ACCESS_CACHE_TTL_MS, 60_000)
+)
+const ACCOUNT_RECOVERY_ACCESS_CACHE_MAX_SIZE = 2000
+const accountRecoveryAccessCache = new Map()
+const getAccountRecoveryAccessCache = (accountId) => {
+  if (!accountId || ACCOUNT_RECOVERY_ACCESS_CACHE_TTL_MS <= 0) return null
+  const entry = accountRecoveryAccessCache.get(accountId)
+  if (!entry) return null
+  if (Date.now() - entry.checkedAt > ACCOUNT_RECOVERY_ACCESS_CACHE_TTL_MS) {
+    accountRecoveryAccessCache.delete(accountId)
+    return null
+  }
+  return entry
+}
+const setAccountRecoveryAccessCache = (accountId, entry) => {
+  if (!accountId || ACCOUNT_RECOVERY_ACCESS_CACHE_TTL_MS <= 0 || !entry) return
+  if (accountRecoveryAccessCache.size > ACCOUNT_RECOVERY_ACCESS_CACHE_MAX_SIZE) {
+    const firstKey = accountRecoveryAccessCache.keys().next().value
+    if (firstKey != null) accountRecoveryAccessCache.delete(firstKey)
+  }
+  accountRecoveryAccessCache.set(accountId, { ...entry, checkedAt: Date.now() })
+}
 const ORDER_TYPE_WARRANTY = 'warranty'
 const ORDER_TYPE_NO_WARRANTY = 'no_warranty'
 const ORDER_TYPE_ANTI_BAN = 'anti_ban'
@@ -243,6 +272,23 @@ const buildRecoveryWindowEndsAt = (redeemedAt) => {
 const isAccountAccessFailure = (error) => {
   const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status)
   return status === 400 || status === 401 || status === 403 || status === 404
+}
+
+const shouldRetryAccountRecoveryRedeem = (error) => {
+  if (!(error instanceof RedemptionError)) return false
+  const statusCode = Number(error.statusCode)
+  const message = String(error.message || '').trim().toLowerCase()
+
+  if (message.includes('已被使用')) return true
+  if (message.includes('不存在') || message.includes('已失效')) return true
+
+  if (statusCode === 503) {
+    if (message.includes('人数上限')) return true
+    if (message.includes('不可用') || message.includes('过期')) return true
+    if (message.includes('暂无可用')) return true
+  }
+
+  return false
 }
 
 const recordAccountRecovery = (db, payload) => {
@@ -593,9 +639,13 @@ export async function redeemCodeInternal({
     }
 
     db.run(
-      `UPDATE redemption_codes SET ${updates.join(', ')} WHERE id = ?`,
+      `UPDATE redemption_codes SET ${updates.join(', ')} WHERE id = ? AND is_redeemed = 0`,
       [...updateParams, codeId]
     )
+    const rowsModified = typeof db.getRowsModified === 'function' ? db.getRowsModified() : null
+    if (rowsModified === 0) {
+      throw new RedemptionError(400, '该兑换码已被使用')
+    }
 
     if (requestedChannelConfig?.redeemMode === 'linux-do' && normalizedRedeemerUid) {
       if (reservedForEntryId) {
@@ -625,6 +675,9 @@ export async function redeemCodeInternal({
 
     saveDatabase()
   } catch (error) {
+    if (error instanceof RedemptionError) {
+      throw error
+    }
     console.error('更新数据库时出错:', error)
     throw new RedemptionError(500, '兑换过程中出现错误，请重试')
   }
@@ -635,7 +688,7 @@ export async function redeemCodeInternal({
   let syncedInviteCount = null
 
   if (chatgptAccountId && accountToken) {
-    inviteResult = await inviteUserToChatGPTTeam(normalizedEmail, accountData)
+    inviteResult = await inviteUserToChatGPTTeam(normalizedEmail, accountData, { proxyKey: accountId })
 
     if (!inviteResult.success) {
       console.error(`邀请用户 ${normalizedEmail} 失败:`, inviteResult.error)
@@ -872,6 +925,7 @@ router.post('/:id/reinvite', authenticateToken, requireMenu('redemption_codes'),
       }
 
       const accountRow = accountResult[0].values[0]
+      const targetAccountId = Number(accountRow[0])
       const token = accountRow[2]
       const chatgptAccountId = accountRow[3]
       const oaiDeviceId = accountRow[4]
@@ -884,7 +938,7 @@ router.post('/:id/reinvite', authenticateToken, requireMenu('redemption_codes'),
         token,
         chatgpt_account_id: chatgptAccountId,
         oai_device_id: oaiDeviceId
-      })
+      }, { proxyKey: targetAccountId })
 
       if (!inviteResult.success) {
         const errorMessage = typeof inviteResult.error === 'string' ? inviteResult.error : '重新邀请失败'
@@ -1244,6 +1298,20 @@ router.post('/recover', async (req, res) => {
                 'warranty'
               ) AS order_type,
               (
+                SELECT po3.status
+                FROM purchase_orders po3
+                WHERE (po3.code_id = rc.id OR (po3.code_id IS NULL AND po3.code = rc.code))
+                ORDER BY po3.created_at DESC
+                LIMIT 1
+              ) AS purchase_order_status,
+              (
+                SELECT po4.refunded_at
+                FROM purchase_orders po4
+                WHERE (po4.code_id = rc.id OR (po4.code_id IS NULL AND po4.code = rc.code))
+                ORDER BY po4.created_at DESC
+                LIMIT 1
+              ) AS purchase_order_refunded_at,
+              (
                 SELECT ar.recovery_account_email
                 FROM account_recovery_logs ar
                 WHERE ar.original_code_id = rc.id
@@ -1270,14 +1338,17 @@ router.post('/recover', async (req, res) => {
               AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
               AND ar_recovery.id IS NULL
               AND (
-                lower(rc.redeemed_by) = ?
-                OR lower(rc.redeemed_by) LIKE ?
+                lower(trim(rc.redeemed_by)) = ?
+                OR lower(trim(rc.redeemed_by)) LIKE ?
               )
           ),
           candidates_with_current AS (
             SELECT
               c.*,
-              COALESCE(NULLIF(lower(c.last_completed_recovery_account_email), ''), lower(c.original_account_email)) AS current_account_email
+              COALESCE(
+                NULLIF(lower(trim(c.last_completed_recovery_account_email)), ''),
+                lower(trim(c.original_account_email))
+              ) AS current_account_email
             FROM candidates c
           )
           SELECT
@@ -1287,6 +1358,8 @@ router.post('/recover', async (req, res) => {
             cw.original_account_email,
             cw.original_channel,
             cw.order_type,
+            cw.purchase_order_status,
+            cw.purchase_order_refunded_at,
             cw.last_completed_recovery_account_email,
             cw.attempts,
             cw.current_account_email,
@@ -1296,7 +1369,7 @@ router.post('/recover', async (req, res) => {
             cw.credit_order_status,
             cw.credit_order_refunded_at
           FROM candidates_with_current cw
-          LEFT JOIN gpt_accounts ga ON lower(ga.email) = cw.current_account_email
+          LEFT JOIN gpt_accounts ga ON lower(trim(ga.email)) = cw.current_account_email
           ORDER BY cw.original_redeemed_at ASC, cw.original_code_id ASC
         `,
         [threshold, normalizedEmail, emailPattern]
@@ -1318,14 +1391,16 @@ router.post('/recover', async (req, res) => {
         originalAccountEmail: row[3] ? String(row[3]) : null,
         originalChannel: row[4] ? String(row[4]) : null,
         orderType: row[5] ? String(row[5]) : null,
-        lastCompletedRecoveryAccountEmail: row[6] ? String(row[6]) : null,
-        attempts: Number(row[7] || 0),
-        currentAccountEmail: row[8] ? String(row[8]) : '',
-        currentAccountId: row[9] != null ? Number(row[9]) : null,
-        currentAccountRecordEmail: row[10] ? String(row[10]) : null,
-        currentIsBanned: Number(row[11] || 0) === 1,
-        creditOrderStatus: row[12] ? String(row[12]) : null,
-        creditOrderRefundedAt: row[13] ? String(row[13]) : null
+        purchaseOrderStatus: row[6] ? String(row[6]) : null,
+        purchaseOrderRefundedAt: row[7] ? String(row[7]) : null,
+        lastCompletedRecoveryAccountEmail: row[8] ? String(row[8]) : null,
+        attempts: Number(row[9] || 0),
+        currentAccountEmail: row[10] ? String(row[10]) : '',
+        currentAccountId: row[11] != null ? Number(row[11]) : null,
+        currentAccountRecordEmail: row[12] ? String(row[12]) : null,
+        currentIsBanned: Number(row[13] || 0) === 1,
+        creditOrderStatus: row[14] ? String(row[14]) : null,
+        creditOrderRefundedAt: row[15] ? String(row[15]) : null
       }))
 
       const eligibleCandidates = candidates.filter(candidate => !isNoWarrantyOrderType(candidate.orderType))
@@ -1340,75 +1415,92 @@ router.post('/recover', async (req, res) => {
 
       const refundableCandidates = eligibleCandidates.filter(candidate => {
         if (candidate.creditOrderRefundedAt) return false
-        const status = String(candidate.creditOrderStatus || '').trim().toLowerCase()
-        return status !== 'refunded'
+        const creditStatus = String(candidate.creditOrderStatus || '').trim().toLowerCase()
+        if (creditStatus === 'refunded') return false
+
+        if (candidate.purchaseOrderRefundedAt) return false
+        const purchaseStatus = String(candidate.purchaseOrderStatus || '').trim().toLowerCase()
+        if (purchaseStatus === 'refunded') return false
+
+        return true
       })
 
       if (refundableCandidates.length === 0) {
         const firstCandidate = eligibleCandidates[0]
         const windowEndsAt = buildRecoveryWindowEndsAt(firstCandidate.originalRedeemedAt)
         return res.status(403).json({
-          error: 'Credit 订单已退款，无法补录，请联系客服',
-          message: 'Credit 订单已退款，无法补录，请联系客服',
-          code: 'CREDIT_ORDER_REFUNDED',
+          error: '订单已退款，无法补录，请联系客服',
+          message: '订单已退款，无法补录，请联系客服',
+          code: 'ORDER_REFUNDED',
           processedOriginalCodeId: firstCandidate.originalCodeId,
           processedOriginalRedeemedAt: firstCandidate.originalRedeemedAt,
-          processedReason: 'credit_order_refunded',
+          processedReason: 'order_refunded',
           windowEndsAt
         })
       }
 
-      const firstCandidate = refundableCandidates[0]
-      let targetCandidate = refundableCandidates.find(candidate => candidate.currentIsBanned) || null
-      let processedReason = targetCandidate ? 'banned' : ''
+	      const firstCandidate = refundableCandidates[0]
+	      let targetCandidate = refundableCandidates.find(candidate => candidate.currentIsBanned) || null
+	      let processedReason = targetCandidate ? 'banned' : ''
 
-      const accessCache = new Map()
-      let unknownSyncError = null
+	      const accessCache = new Map()
+	      let unknownSyncError = null
 
       if (!targetCandidate) {
         for (const candidate of refundableCandidates) {
-          const accountId = candidate.currentAccountId
-          if (!candidate.currentAccountEmail || !accountId) {
-            targetCandidate = candidate
-            processedReason = 'missing_account'
-            break
-          }
+	          const accountId = candidate.currentAccountId
+	          if (!candidate.currentAccountEmail || !accountId) {
+	            targetCandidate = candidate
+	            processedReason = 'missing_account'
+	            break
+	          }
 
-          const cached = accessCache.get(accountId)
-          if (cached?.status === 'accessible') continue
-          if (cached?.status === 'access_failure') {
-            targetCandidate = candidate
-            processedReason = 'access_failure'
-            break
-          }
-          if (cached?.status === 'unknown') {
-            if (!unknownSyncError) {
-              unknownSyncError = { error: cached.error, statusCode: cached.statusCode, candidate }
-            }
-            continue
-          }
+	          let cached = accessCache.get(accountId)
+	          if (!cached) {
+	            const globalCached = getAccountRecoveryAccessCache(accountId)
+	            if (globalCached) {
+	              cached = globalCached
+	              accessCache.set(accountId, globalCached)
+	            }
+	          }
+	          if (cached?.status === 'accessible') continue
+	          if (cached?.status === 'access_failure') {
+	            targetCandidate = candidate
+	            processedReason = 'access_failure'
+	            break
+	          }
+	          if (cached?.status === 'unknown') {
+	            if (!unknownSyncError) {
+	              unknownSyncError = { error: cached.error, statusCode: cached.statusCode, candidate }
+	            }
+	            continue
+	          }
 
-          try {
-            const syncResult = await syncAccountUserCount(accountId, {
-              userListParams: { offset: 0, limit: 1, query: '' }
-            })
-            const userCount = syncResult.account?.userCount ?? syncResult.syncedUserCount ?? null
-            accessCache.set(accountId, { status: 'accessible', userCount })
-          } catch (error) {
-            if (isAccountAccessFailure(error)) {
-              accessCache.set(accountId, { status: 'access_failure', error })
-              targetCandidate = candidate
-              processedReason = 'access_failure'
-              break
-            }
-            const statusCode = Number(error?.status ?? error?.statusCode) || 503
-            accessCache.set(accountId, { status: 'unknown', error, statusCode })
-            if (!unknownSyncError) {
-              unknownSyncError = { error, statusCode, candidate }
-            }
-          }
-        }
-      }
+	          try {
+	            const usersData = await fetchAccountUsersList(accountId, {
+	              userListParams: { offset: 0, limit: 1, query: '' }
+	            })
+	            const userCount = typeof usersData?.total === 'number' ? usersData.total : null
+	            const entry = { status: 'accessible', userCount }
+	            accessCache.set(accountId, entry)
+	            setAccountRecoveryAccessCache(accountId, entry)
+	          } catch (error) {
+	            if (isAccountAccessFailure(error)) {
+	              const entry = { status: 'access_failure' }
+	              accessCache.set(accountId, { ...entry, error })
+	              setAccountRecoveryAccessCache(accountId, entry)
+	              targetCandidate = candidate
+	              processedReason = 'access_failure'
+	              break
+	            }
+	            const statusCode = Number(error?.status ?? error?.statusCode) || 503
+	            accessCache.set(accountId, { status: 'unknown', error, statusCode })
+	            if (!unknownSyncError) {
+	              unknownSyncError = { error, statusCode, candidate }
+	            }
+	          }
+	        }
+	      }
 
       if (!targetCandidate) {
         if (unknownSyncError) {
@@ -1474,111 +1566,208 @@ router.post('/recover', async (req, res) => {
       const redeemedAt = targetCandidate.originalRedeemedAt
       const originalAccountEmail = targetCandidate.originalAccountEmail
       const windowEndsAt = buildRecoveryWindowEndsAt(redeemedAt)
-      const orderDeadlineMs = resolveOrderDeadlineMs(db, {
-        originalCodeId,
-        redeemedAt,
-        orderType: targetCandidate.orderType
-      })
 
-      // 补录账号池（统一规则）：
-      // - 只取开放账号（is_open=1）
-      // - 严格模式下优先非当日（按 gpt_accounts.created_at 判断）
-      // - 只用通用渠道兑换码（rc.channel 为空或 common）
-      // - 账号 expire_at 需未过期；当 ACCOUNT_RECOVERY_IGNORE_ORDER_DEADLINE=false 时，还要求覆盖订单截止日
-      const ignoreDeadline = parseBoolean(process.env.ACCOUNT_RECOVERY_IGNORE_ORDER_DEADLINE, true)
-      const selectedRecovery = selectRecoveryCode(db, {
-        minExpireMs: ignoreDeadline ? Date.now() : orderDeadlineMs,
-        capacityLimit: 6,
-        preferNonToday: ignoreDeadline ? false : true,
-        preferLatestExpire: ignoreDeadline,
-        limit: 200
-      })
+      return await withLocks([`account-recovery:original:${originalCodeId}`], async () => {
+        const completedResult = db.exec(
+          `
+            SELECT status, recovery_account_email
+            FROM account_recovery_logs
+            WHERE original_code_id = ?
+              AND status IN ('success', 'skipped')
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+          [originalCodeId]
+        )
+        const completedRow = completedResult[0]?.values?.[0]
+        const completedStatus = completedRow?.[0] ? String(completedRow[0]).trim().toLowerCase() : ''
+        const completedAccountEmail = completedRow?.[1] ? normalizeEmail(completedRow[1]) : ''
+        const completedAccountForCheck = completedAccountEmail
+          || targetCandidate.currentAccountRecordEmail
+          || targetCandidate.currentAccountEmail
 
-      if (!selectedRecovery) {
-        recordAccountRecovery(db, {
-          email: normalizedEmail,
-          originalCodeId,
-          originalRedeemedAt: redeemedAt,
-          originalAccountEmail,
-          recoveryMode: 'open-account',
-          status: 'failed',
-          errorMessage: '暂无可用通用渠道补录兑换码'
-        })
-        saveDatabase()
-        return res.status(503).json({
-          error: '暂无可用通用渠道补录账号，请稍后再试或联系客服',
-          message: '暂无可用通用渠道补录账号，请稍后再试或联系客服',
-          processedOriginalCodeId: originalCodeId,
-          processedOriginalRedeemedAt: redeemedAt,
-          processedReason,
-          windowEndsAt
-        })
-      }
+        if (completedStatus && completedAccountForCheck) {
+          const accountStateResult = db.exec(
+            `
+              SELECT COALESCE(is_banned, 0) AS is_banned,
+                     COALESCE(user_count, 0) AS user_count,
+                     COALESCE(invite_count, 0) AS invite_count
+              FROM gpt_accounts
+              WHERE lower(trim(email)) = ?
+              LIMIT 1
+            `,
+            [completedAccountForCheck]
+          )
+          const accountStateRow = accountStateResult[0]?.values?.[0]
+          const currentIsBanned = accountStateRow ? Number(accountStateRow[0] || 0) === 1 : null
+          const currentUserCount = accountStateRow ? Number(accountStateRow[1] || 0) : null
+          const currentInviteCount = accountStateRow ? Number(accountStateRow[2] || 0) : null
 
-      const recoveryCodeId = selectedRecovery.recoveryCodeId
-      const recoveryCode = selectedRecovery.recoveryCode
-      const recoveryChannel = selectedRecovery.recoveryChannel || 'common'
-      const recoveryAccountEmail = selectedRecovery.recoveryAccountEmail
-      const skipCodeFormatValidation = false
-
-      try {
-	        const redemptionResult = await redeemCodeInternal({
-	          code: recoveryCode,
-	          email: normalizedEmail,
-	          channel: recoveryChannel || 'common',
-	          skipCodeFormatValidation,
-	        })
-
-        recordAccountRecovery(db, {
-          email: normalizedEmail,
-          originalCodeId,
-          originalRedeemedAt: redeemedAt,
-          originalAccountEmail,
-          recoveryMode: 'open-account',
-          recoveryCodeId,
-          recoveryCode,
-          recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
-          status: 'success'
-        })
-        saveDatabase()
-
-        return res.json({
-          message: '补录成功',
-          data: {
-            accountEmail: redemptionResult.data.accountEmail,
-            userCount: redemptionResult.data.userCount,
-            inviteStatus: redemptionResult.data.inviteStatus,
-            recoveryMode: 'open-account',
-            windowEndsAt,
-            processedOriginalCodeId: originalCodeId,
-            processedOriginalRedeemedAt: redeemedAt,
-            processedReason
+          if (completedStatus === 'skipped') {
+            return res.json({
+              message: '当前工作空间仍可访问，无需补录',
+              data: {
+                accountEmail: completedAccountForCheck,
+                userCount: currentUserCount,
+                inviteCount: currentInviteCount,
+                recoveryMode: 'not-needed',
+                windowEndsAt,
+                processedOriginalCodeId: originalCodeId,
+                processedOriginalRedeemedAt: redeemedAt,
+                processedReason: 'already_skipped'
+              }
+            })
           }
+
+          if (completedStatus === 'success' && currentIsBanned === false) {
+            return res.json({
+              message: '补录已完成，请检查邮箱邀请',
+              data: {
+                accountEmail: completedAccountForCheck,
+                userCount: currentUserCount,
+                inviteCount: currentInviteCount,
+                recoveryMode: 'already-done',
+                windowEndsAt,
+                processedOriginalCodeId: originalCodeId,
+                processedOriginalRedeemedAt: redeemedAt,
+                processedReason: 'already_recovered'
+              }
+            })
+          }
+        }
+
+        const orderDeadlineMs = resolveOrderDeadlineMs(db, {
+          originalCodeId,
+          redeemedAt,
+          orderType: targetCandidate.orderType
         })
-      } catch (error) {
-        const statusCode = error instanceof RedemptionError ? error.statusCode || 400 : 500
+
+        // 补录账号池（统一规则）：
+        // - 只取开放账号（is_open=1）
+        // - 严格模式下优先非当日（按 gpt_accounts.created_at 判断）
+        // - 只用通用渠道兑换码（rc.channel 为空或 common）
+        // - 账号 expire_at 需未过期；在系统设置开启“过期覆盖订单截止日”时，还要求覆盖订单截止日
+        // - 兑换码创建时间窗口由系统设置控制（默认近 7 天；可选强制仅当天）
+        const recoverySettings = await getAccountRecoverySettings(db)
+        const codeCreatedWithinDays = Math.max(1, toInt(recoverySettings?.effective?.codeCreatedWithinDays, 7))
+        const requireExpireCoverDeadline = Boolean(recoverySettings?.effective?.requireExpireCoverDeadline)
+        const skipCodeFormatValidation = false
+        const triedRecoveryCodeIds = new Set()
+        let lastAttemptError = null
+        let lastAttemptRecovery = null
+
+        for (let attempt = 1; attempt <= ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS; attempt += 1) {
+          const selectedRecovery = selectRecoveryCode(db, {
+            minExpireMs: requireExpireCoverDeadline ? orderDeadlineMs : Date.now(),
+            capacityLimit: 6,
+            preferNonToday: requireExpireCoverDeadline,
+            preferLatestExpire: !requireExpireCoverDeadline,
+            limit: 200,
+            codeCreatedWithinDays,
+            excludeCodeIds: Array.from(triedRecoveryCodeIds)
+          })
+
+          if (!selectedRecovery) break
+
+          lastAttemptRecovery = selectedRecovery
+          triedRecoveryCodeIds.add(selectedRecovery.recoveryCodeId)
+
+          const recoveryCodeId = selectedRecovery.recoveryCodeId
+          const recoveryCode = selectedRecovery.recoveryCode
+          const recoveryChannel = selectedRecovery.recoveryChannel || 'common'
+          const recoveryAccountEmail = selectedRecovery.recoveryAccountEmail
+
+          try {
+            const redemptionResult = await redeemCodeInternal({
+              code: recoveryCode,
+              email: normalizedEmail,
+              channel: recoveryChannel || 'common',
+              skipCodeFormatValidation
+            })
+
+            recordAccountRecovery(db, {
+              email: normalizedEmail,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
+              recoveryCodeId,
+              recoveryCode,
+              recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
+              status: 'success'
+            })
+            saveDatabase()
+
+            return res.json({
+              message: '补录成功',
+              data: {
+                accountEmail: redemptionResult.data.accountEmail,
+                userCount: redemptionResult.data.userCount,
+                inviteStatus: redemptionResult.data.inviteStatus,
+                recoveryMode: 'open-account',
+                windowEndsAt,
+                processedOriginalCodeId: originalCodeId,
+                processedOriginalRedeemedAt: redeemedAt,
+                processedReason
+              }
+            })
+          } catch (error) {
+            lastAttemptError = error
+            const shouldRetry = attempt < ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS && shouldRetryAccountRecoveryRedeem(error)
+            if (shouldRetry) continue
+
+            const statusCode = error instanceof RedemptionError ? error.statusCode || 400 : 500
+            recordAccountRecovery(db, {
+              email: normalizedEmail,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
+              recoveryCodeId,
+              recoveryCode,
+              recoveryAccountEmail,
+              status: 'failed',
+              errorMessage: error?.message || '补录失败'
+            })
+            saveDatabase()
+            return res.status(statusCode).json({
+              error: error?.message || '补录失败，请稍后再试',
+              message: error?.message || '补录失败，请稍后再试',
+              processedOriginalCodeId: originalCodeId,
+              processedOriginalRedeemedAt: redeemedAt,
+              processedReason,
+              windowEndsAt
+            })
+          }
+        }
+
+        const errorMessage = lastAttemptError?.message || '暂无可用通用渠道补录兑换码'
+        const responseMessage = '暂无可用通用渠道补录账号，请稍后再试或联系客服'
+        const statusCode = 503
+
         recordAccountRecovery(db, {
           email: normalizedEmail,
           originalCodeId,
           originalRedeemedAt: redeemedAt,
           originalAccountEmail,
           recoveryMode: 'open-account',
-          recoveryCodeId,
-          recoveryCode,
-          recoveryAccountEmail,
+          recoveryCodeId: lastAttemptRecovery?.recoveryCodeId,
+          recoveryCode: lastAttemptRecovery?.recoveryCode,
+          recoveryAccountEmail: lastAttemptRecovery?.recoveryAccountEmail,
           status: 'failed',
-          errorMessage: error?.message || '补录失败'
+          errorMessage
         })
         saveDatabase()
+
         return res.status(statusCode).json({
-          error: error?.message || '补录失败，请稍后再试',
-          message: error?.message || '补录失败，请稍后再试',
+          error: responseMessage,
+          message: responseMessage,
           processedOriginalCodeId: originalCodeId,
           processedOriginalRedeemedAt: redeemedAt,
           processedReason,
           windowEndsAt
         })
-      }
+      })
     })
   } catch (error) {
     console.error('补录处理失败:', error)

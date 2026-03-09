@@ -1,6 +1,6 @@
 import { getDatabase, saveDatabase } from '../database/init.js'
 import { withLocks } from '../utils/locks.js'
-import { formatProxyForLog, loadProxyList } from '../utils/proxy.js'
+import { formatProxyForLog, loadProxyList, pickProxyByHash } from '../utils/proxy.js'
 import { AccountSyncError, deleteAccountUser, fetchAccountUsersList, syncAccountInviteCount, syncAccountUserCount } from './account-sync.js'
 import { sendOpenAccountsSweeperReportEmail } from './email-service.js'
 import { getFeatureFlags, isFeatureEnabled } from '../utils/feature-flags.js'
@@ -145,23 +145,21 @@ export const startOpenAccountsOvercapacitySweeper = () => {
       if (accountRows.length === 0) return
 
       const max = maxJoined()
-      const workerCount = Math.min(concurrency(), accountRows.length)
-      const queue = [...accountRows]
-      const proxies = loadProxyList()
-      let proxyCursor = 0
-      const pickProxy = () => (proxies.length ? proxies[(proxyCursor++) % proxies.length] : null)
-      const results = []
-      const failures = []
-      let totalKicked = 0
+	      const workerCount = Math.min(concurrency(), accountRows.length)
+	      const queue = [...accountRows]
+	      const proxies = loadProxyList()
+	      const results = []
+	      const failures = []
+	      let totalKicked = 0
 
       const worker = async () => {
         while (queue.length > 0) {
-          const item = queue.shift()
-          if (!item) return
-          const { id, emailPrefix } = item
-          const proxyEntry = pickProxy()
-          const proxy = proxyEntry?.url || null
-          const proxyLabel = proxyEntry ? formatProxyForLog(proxyEntry.url) : null
+	          const item = queue.shift()
+	          if (!item) return
+	          const { id, emailPrefix } = item
+	          const proxyEntry = pickProxyByHash(proxies, id)
+	          const proxy = proxyEntry?.url || null
+	          const proxyLabel = proxyEntry ? formatProxyForLog(proxyEntry.url) : null
           await withLocks([`acct:${id}`], async () => {
             try {
               const outcome = await enforceAccountCapacity(id, { maxJoinedCount: max, proxy })

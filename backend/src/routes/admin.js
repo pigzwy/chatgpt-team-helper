@@ -20,6 +20,7 @@ import { getTurnstileSettings, getTurnstileSettingsFromEnv, invalidateTurnstileS
 import { getTelegramSettings, getTelegramSettingsFromEnv, invalidateTelegramSettingsCache } from '../utils/telegram-settings.js'
 import { getFeatureFlags, invalidateFeatureFlagsCache } from '../utils/feature-flags.js'
 import { CHANNEL_KEY_REGEX, getChannelByKey, getChannels, invalidateChannelsCache, normalizeChannelKey } from '../utils/channels.js'
+import { getAccountRecoverySettings, invalidateAccountRecoverySettingsCache } from '../utils/account-recovery-settings.js'
 import {
   PRODUCT_KEY_REGEX,
   getPurchaseProductByKey,
@@ -86,6 +87,26 @@ const normalizeOrderType = (value) => {
 }
 
 const ACCOUNT_RECOVERY_WINDOW_DAYS = Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_WINDOW_DAYS, 30))
+const ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS = Math.min(
+  10,
+  Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS, 3))
+)
+
+const shouldRetryAccountRecoveryRedeem = (error) => {
+  const statusCode = Number(error?.statusCode ?? error?.status)
+  const message = String(error?.message || '').trim().toLowerCase()
+
+  if (message.includes('已被使用')) return true
+  if (message.includes('不存在') || message.includes('已失效')) return true
+
+  if (statusCode === 503) {
+    if (message.includes('人数上限')) return true
+    if (message.includes('不可用') || message.includes('过期')) return true
+    if (message.includes('暂无可用')) return true
+  }
+
+  return false
+}
 
 const ACCOUNT_RECOVERY_SOURCES = ['payment', 'credit', 'xianyu', 'xhs', 'manual']
 const ACCOUNT_RECOVERY_SOURCE_SET = new Set(ACCOUNT_RECOVERY_SOURCES)
@@ -372,6 +393,108 @@ router.put('/feature-flags', async (req, res) => {
   } catch (error) {
     console.error('Update feature-flags error:', error)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.get('/account-recovery-settings', async (req, res) => {
+  try {
+    const db = await getDatabase()
+    const settings = await getAccountRecoverySettings(db, { forceRefresh: true })
+    return res.json({
+      settings: {
+        forceTodayCodes: Boolean(settings.forceTodayCodes),
+        codeWindowDays: Number(settings.codeWindowDays || 0) || 0,
+        requireExpireCoverDeadline: Boolean(settings.requireExpireCoverDeadline)
+      },
+      effective: {
+        codeCreatedWithinDays: Number(settings.effective?.codeCreatedWithinDays || 0) || 0,
+        requireExpireCoverDeadline: Boolean(settings.effective?.requireExpireCoverDeadline)
+      }
+    })
+  } catch (error) {
+    console.error('Get account-recovery-settings error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.put('/account-recovery-settings', async (req, res) => {
+  try {
+    const payload = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : (req.body || {})
+
+    const normalizeFlag = (value) => {
+      if (typeof value === 'boolean') return value
+      if (typeof value === 'number') return value !== 0
+      const normalized = String(value ?? '').trim().toLowerCase()
+      if (!normalized) return null
+      if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true
+      if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false
+      return null
+    }
+
+    const normalizeWindowDays = (value, fallback) => {
+      if (value === undefined || value === null) return fallback
+      const parsed = Number.parseInt(String(value ?? ''), 10)
+      if (!Number.isFinite(parsed)) return null
+      return Math.max(1, Math.min(365, parsed))
+    }
+
+    const db = await getDatabase()
+    const current = await getAccountRecoverySettings(db, { forceRefresh: true })
+
+    const hasAnyField = ['forceTodayCodes', 'codeWindowDays', 'requireExpireCoverDeadline'].some(key => key in payload)
+    if (!hasAnyField) {
+      return res.status(400).json({ error: 'No settings provided' })
+    }
+
+    let forceTodayCodes = Boolean(current.forceTodayCodes)
+    let codeWindowDays = Number(current.codeWindowDays || 0) || 0
+    let requireExpireCoverDeadline = Boolean(current.requireExpireCoverDeadline)
+
+    if ('forceTodayCodes' in payload) {
+      const value = normalizeFlag(payload.forceTodayCodes)
+      if (value === null) return res.status(400).json({ error: 'Invalid forceTodayCodes' })
+      forceTodayCodes = value
+    }
+
+    if ('codeWindowDays' in payload) {
+      const value = normalizeWindowDays(payload.codeWindowDays, current.codeWindowDays)
+      if (value === null) return res.status(400).json({ error: 'Invalid codeWindowDays' })
+      codeWindowDays = value
+    } else {
+      codeWindowDays = Number.isFinite(Number(codeWindowDays)) && codeWindowDays > 0 ? codeWindowDays : 7
+    }
+
+    if ('requireExpireCoverDeadline' in payload) {
+      const value = normalizeFlag(payload.requireExpireCoverDeadline)
+      if (value === null) return res.status(400).json({ error: 'Invalid requireExpireCoverDeadline' })
+      requireExpireCoverDeadline = value
+    }
+
+    // 规则：forceTodayCodes=否 时，后端强制关闭 expireCoverDeadline。
+    const effectiveRequireExpireCoverDeadline = forceTodayCodes ? requireExpireCoverDeadline : false
+
+    upsertSystemConfigValue(db, 'account_recovery_force_today_codes', forceTodayCodes ? 'true' : 'false')
+    upsertSystemConfigValue(db, 'account_recovery_code_window_days', String(codeWindowDays))
+    upsertSystemConfigValue(db, 'account_recovery_require_expire_cover_deadline', effectiveRequireExpireCoverDeadline ? 'true' : 'false')
+    saveDatabase()
+
+    invalidateAccountRecoverySettingsCache()
+
+    const settings = await getAccountRecoverySettings(db, { forceRefresh: true })
+    return res.json({
+      settings: {
+        forceTodayCodes: Boolean(settings.forceTodayCodes),
+        codeWindowDays: Number(settings.codeWindowDays || 0) || 0,
+        requireExpireCoverDeadline: Boolean(settings.requireExpireCoverDeadline)
+      },
+      effective: {
+        codeCreatedWithinDays: Number(settings.effective?.codeCreatedWithinDays || 0) || 0,
+        requireExpireCoverDeadline: Boolean(settings.effective?.requireExpireCoverDeadline)
+      }
+    })
+  } catch (error) {
+    console.error('Update account-recovery-settings error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 })
 
@@ -1963,7 +2086,7 @@ router.delete('/rbac/users/:id', async (req, res) => {
 	            ELSE NULL
 	          END AS source
 	        FROM gpt_accounts ga
-	        JOIN redemption_codes rc ON lower(rc.account_email) = lower(ga.email)
+	        JOIN redemption_codes rc ON lower(trim(rc.account_email)) = lower(trim(ga.email))
 	        WHERE ga.is_banned = 1
 	          AND rc.is_redeemed = 1
 	          AND rc.redeemed_at IS NOT NULL
@@ -2011,7 +2134,7 @@ router.delete('/rbac/users/:id', async (req, res) => {
 	            ELSE COALESCE(current_ga.is_banned, 0)
 	          END AS current_is_banned
 	        FROM eligible_enriched ee
-	        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(ee.current_account_email)
+		        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(ee.current_account_email))
 	      ),
 	      eligible_agg AS (
 	        SELECT
@@ -2093,6 +2216,67 @@ router.delete('/rbac/users/:id', async (req, res) => {
     })
   } catch (error) {
     console.error('Get banned recovery accounts error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/account-recovery/banned-accounts/processed', async (req, res) => {
+  try {
+    const rawIds = req.body?.accountIds ?? req.body?.ids ?? req.body?.accountIdList
+    const accountIds = Array.isArray(rawIds)
+      ? [...new Set(rawIds.map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0))]
+      : []
+
+    if (!accountIds.length) {
+      return res.status(400).json({ error: 'Invalid accountIds' })
+    }
+
+    if (accountIds.length > 500) {
+      return res.status(400).json({ error: 'Too many accountIds' })
+    }
+
+    const raw = req.body?.processed ?? req.body?.value
+    const processed = typeof raw === 'boolean' ? raw : Number(raw ?? 1) !== 0
+
+    const db = await getDatabase()
+    const placeholders = accountIds.map(() => '?').join(', ')
+    const lookupResult = db.exec(
+      `
+        SELECT id, COALESCE(is_banned, 0) AS is_banned
+        FROM gpt_accounts
+        WHERE id IN (${placeholders})
+      `,
+      accountIds
+    )
+    const rows = lookupResult[0]?.values || []
+    const foundIdSet = new Set(rows.map(row => Number(row[0])))
+    const missingIds = accountIds.filter(id => !foundIdSet.has(id))
+    const notBannedIds = rows.filter(row => Number(row[1] || 0) !== 1).map(row => Number(row[0]))
+    const bannedIds = rows.filter(row => Number(row[1] || 0) === 1).map(row => Number(row[0]))
+
+    if (!bannedIds.length) {
+      return res.status(400).json({ error: 'No banned accounts to update' })
+    }
+
+    const updatePlaceholders = bannedIds.map(() => '?').join(', ')
+    db.run(
+      `
+        UPDATE gpt_accounts
+        SET ban_processed = ?, updated_at = DATETIME('now', 'localtime')
+        WHERE id IN (${updatePlaceholders})
+      `,
+      [processed ? 1 : 0, ...bannedIds]
+    )
+    saveDatabase()
+
+    return res.json({
+      requestedCount: accountIds.length,
+      updatedCount: bannedIds.length,
+      missingIds,
+      notBannedIds,
+    })
+  } catch (error) {
+    console.error('Batch update banned account processed error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -2335,11 +2519,11 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
         )
         SELECT COUNT(*)
         FROM eligible_filtered rc
-        JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
         LEFT JOIN log_flags lf ON lf.original_code_id = rc.id
         LEFT JOIN log_latest ll ON ll.original_code_id = rc.id
         LEFT JOIN completed_latest cl ON cl.original_code_id = rc.id
-        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email))
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email)))
         ${whereClause}
       `,
       [...eligibilityParams, ...accountParams]
@@ -2492,11 +2676,11 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
           ll.created_at AS latest_created_at,
           rc.source AS source
         FROM eligible_filtered rc
-        JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
         LEFT JOIN log_flags lf ON lf.original_code_id = rc.id
         LEFT JOIN log_latest ll ON ll.original_code_id = rc.id
         LEFT JOIN completed_latest cl ON cl.original_code_id = rc.id
-        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email))
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email)))
         ${whereClause}
         ORDER BY rc.redeemed_at DESC
         LIMIT ? OFFSET ?
@@ -2619,7 +2803,7 @@ router.get('/account-recovery/one-click/preview', async (req, res) => {
       `
         SELECT COUNT(*)
         FROM redemption_codes rc
-        JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
         WHERE rc.is_redeemed = 0
           AND rc.account_email IS NOT NULL
           AND trim(rc.account_email) != ''
@@ -2736,7 +2920,7 @@ router.get('/account-recovery/one-click/preview', async (req, res) => {
             ELSE NULL
           END AS source
         FROM gpt_accounts ga
-        JOIN redemption_codes rc ON lower(rc.account_email) = lower(ga.email)
+        JOIN redemption_codes rc ON lower(trim(rc.account_email)) = lower(trim(ga.email))
         WHERE ga.is_banned = 1
           AND COALESCE(ga.ban_processed, 0) = 0
           AND rc.is_redeemed = 1
@@ -2779,7 +2963,7 @@ router.get('/account-recovery/one-click/preview', async (req, res) => {
             ELSE COALESCE(current_ga.is_banned, 0)
           END AS current_is_banned
         FROM eligible_enriched ee
-        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(ee.current_account_email)
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(ee.current_account_email))
       )
     `.trim()
 
@@ -2863,7 +3047,7 @@ router.post('/account-recovery/recover', async (req, res) => {
     const results = []
 
 	    for (const originalCodeId of originalCodeIds) {
-	      const outcome = await withLocks([`admin-account-recovery:${originalCodeId}`], async () => {
+	      const outcome = await withLocks([`account-recovery:original:${originalCodeId}`], async () => {
 	        const originalResult = db.exec(
 	          `
 	            SELECT
@@ -2886,7 +3070,7 @@ router.post('/account-recovery/recover', async (req, res) => {
                 'warranty'
               ) AS order_type
 	            FROM redemption_codes rc
-	            JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+	            JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
 	            LEFT JOIN account_recovery_logs ar_recovery
 	              ON ar_recovery.recovery_code_id = rc.id
 	              AND ar_recovery.status IN ('success', 'skipped')
@@ -3021,84 +3205,111 @@ router.post('/account-recovery/recover', async (req, res) => {
           orderType: resolvedOrderType
         })
 
-        const ignoreDeadline = parseBoolean(process.env.ACCOUNT_RECOVERY_IGNORE_ORDER_DEADLINE, true)
-        const selectedRecovery = selectRecoveryCode(db, {
-          minExpireMs: ignoreDeadline ? Date.now() : orderDeadlineMs,
-          capacityLimit: 6,
-          preferNonToday: ignoreDeadline ? false : true,
-          preferLatestExpire: ignoreDeadline,
-          limit: 200
-        })
+        const recoverySettings = await getAccountRecoverySettings(db)
+        const codeCreatedWithinDays = Math.max(1, toInt(recoverySettings?.effective?.codeCreatedWithinDays, 7))
+        const requireExpireCoverDeadline = Boolean(recoverySettings?.effective?.requireExpireCoverDeadline)
+        const triedRecoveryCodeIds = new Set()
+        let lastAttemptError = null
+        let lastAttemptRecovery = null
 
-        if (!selectedRecovery) {
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            status: 'failed',
-            errorMessage: '暂无可用通用渠道补录兑换码'
+        for (let attempt = 1; attempt <= ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS; attempt += 1) {
+          const selectedRecovery = selectRecoveryCode(db, {
+            minExpireMs: requireExpireCoverDeadline ? orderDeadlineMs : Date.now(),
+            capacityLimit: 6,
+            preferNonToday: requireExpireCoverDeadline,
+            preferLatestExpire: !requireExpireCoverDeadline,
+            limit: 200,
+            codeCreatedWithinDays,
+            excludeCodeIds: Array.from(triedRecoveryCodeIds)
           })
-          saveDatabase()
-          return { originalCodeId, outcome: 'failed', message: '暂无可用通用渠道补录兑换码' }
-        }
+          if (!selectedRecovery) break
 
-        const recoveryCodeId = selectedRecovery.recoveryCodeId
-        const recoveryCode = selectedRecovery.recoveryCode
-        const recoveryChannel = selectedRecovery.recoveryChannel || 'common'
-        const recoveryAccountEmail = selectedRecovery.recoveryAccountEmail
+          lastAttemptRecovery = selectedRecovery
+          triedRecoveryCodeIds.add(selectedRecovery.recoveryCodeId)
 
-        try {
-          const redemptionResult = await redeemCodeInternal({
-            code: recoveryCode,
-            email: redeemedBy,
-            channel: recoveryChannel
-          })
+          const recoveryCodeId = selectedRecovery.recoveryCodeId
+          const recoveryCode = selectedRecovery.recoveryCode
+          const recoveryChannel = selectedRecovery.recoveryChannel || 'common'
+          const recoveryAccountEmail = selectedRecovery.recoveryAccountEmail
 
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            recoveryCodeId,
-            recoveryCode,
-            recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
-            status: 'success'
-          })
-          saveDatabase()
-          return {
-            originalCodeId,
-            outcome: 'success',
-            message: '补录成功',
-            recovery: {
+          try {
+            const redemptionResult = await redeemCodeInternal({
+              code: recoveryCode,
+              email: redeemedBy,
+              channel: recoveryChannel
+            })
+
+            recordAccountRecovery(db, {
+              email: redeemedBy,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
               recoveryCodeId,
               recoveryCode,
-              recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail
+              recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
+              status: 'success'
+            })
+            saveDatabase()
+            return {
+              originalCodeId,
+              outcome: 'success',
+              message: '补录成功',
+              recovery: {
+                recoveryCodeId,
+                recoveryCode,
+                recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail
+              }
+            }
+          } catch (error) {
+            lastAttemptError = error
+            const shouldRetry = attempt < ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS && shouldRetryAccountRecoveryRedeem(error)
+            if (shouldRetry) continue
+
+            const statusCode = typeof error?.statusCode === 'number'
+              ? error.statusCode
+              : (typeof error?.status === 'number' ? error.status : 500)
+            recordAccountRecovery(db, {
+              email: redeemedBy,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
+              recoveryCodeId,
+              recoveryCode,
+              recoveryAccountEmail,
+              status: 'failed',
+              errorMessage: error?.message || '补录失败'
+            })
+            saveDatabase()
+            return {
+              originalCodeId,
+              outcome: 'failed',
+              message: error?.message || '补录失败',
+              statusCode
             }
           }
-        } catch (error) {
-          const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : (typeof error?.status === 'number' ? error.status : 500)
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            recoveryCodeId,
-            recoveryCode,
-            recoveryAccountEmail,
-            status: 'failed',
-            errorMessage: error?.message || '补录失败'
-          })
-          saveDatabase()
-          return {
-            originalCodeId,
-            outcome: 'failed',
-            message: error?.message || '补录失败',
-            statusCode
-          }
+        }
+
+        const errorMessage = lastAttemptError?.message || '暂无可用通用渠道补录兑换码'
+        recordAccountRecovery(db, {
+          email: redeemedBy,
+          originalCodeId,
+          originalRedeemedAt: redeemedAt,
+          originalAccountEmail,
+          recoveryMode: 'open-account',
+          recoveryCodeId: lastAttemptRecovery?.recoveryCodeId,
+          recoveryCode: lastAttemptRecovery?.recoveryCode,
+          recoveryAccountEmail: lastAttemptRecovery?.recoveryAccountEmail,
+          status: 'failed',
+          errorMessage
+        })
+        saveDatabase()
+
+        return {
+          originalCodeId,
+          outcome: 'failed',
+          message: errorMessage
         }
       })
 
@@ -3283,15 +3494,7 @@ router.delete('/channels/:key', async (req, res) => {
       return res.status(400).json({ error: '内置渠道不可删除' })
     }
 
-    db.run(
-      `
-        UPDATE channels
-        SET is_active = 0,
-            updated_at = DATETIME('now', 'localtime')
-        WHERE key = ?
-      `,
-      [key]
-    )
+    db.run('DELETE FROM channels WHERE key = ?', [key])
     saveDatabase()
     invalidateChannelsCache()
     return res.json({ ok: true })
@@ -3505,8 +3708,9 @@ router.delete('/purchase-products/:productKey', async (req, res) => {
       return res.status(404).json({ error: '商品不存在' })
     }
 
-    const product = await disablePurchaseProduct(db, productKey)
-    return res.json({ product })
+    db.run('DELETE FROM purchase_products WHERE product_key = ?', [productKey])
+    saveDatabase()
+    return res.json({ ok: true })
   } catch (error) {
     console.error('[Admin] delete purchase-product error:', error)
     return res.status(500).json({ error: 'Internal server error' })

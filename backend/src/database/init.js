@@ -32,7 +32,7 @@ const BUILTIN_CHANNELS = [
     redeemMode: 'code',
     allowCommonFallback: 0,
     isActive: 1,
-    isBuiltin: 1,
+    isBuiltin: 0,
     sortOrder: 20
   },
   {
@@ -68,7 +68,7 @@ const BUILTIN_CHANNELS = [
     redeemMode: 'api',
     allowCommonFallback: 0,
     isActive: 1,
-    isBuiltin: 1,
+    isBuiltin: 0,
     sortOrder: 60
   }
 ]
@@ -115,6 +115,27 @@ const getTableColumns = (database, tableName) => {
     return new Set(rows.map(row => String(row[1] || '')))
   } catch {
     return new Set()
+  }
+}
+
+const indexExists = (database, indexName) => {
+  if (!database || !indexName) return false
+  const result = database.exec(
+    'SELECT name FROM sqlite_master WHERE type = "index" AND name = ? LIMIT 1',
+    [String(indexName)]
+  )
+  return Boolean(result[0]?.values?.length)
+}
+
+const ensureIndex = (database, indexName, createSql) => {
+  if (!database || !indexName || !createSql) return false
+  if (indexExists(database, indexName)) return false
+  try {
+    database.run(createSql)
+    return true
+  } catch (error) {
+    console.warn(`[DB] 无法创建索引 ${indexName}:`, error)
+    return false
   }
 }
 
@@ -699,6 +720,77 @@ const ensureWaitingRoomTable = (database) => {
   return changed || cooldownTableChanged
 }
 
+const ensureCoreIndexes = (database) => {
+  if (!database) return false
+  let changed = false
+
+  changed = ensureIndex(
+    database,
+    'idx_gpt_accounts_email',
+    'CREATE INDEX IF NOT EXISTS idx_gpt_accounts_email ON gpt_accounts (email)'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_gpt_accounts_email_norm',
+    'CREATE INDEX IF NOT EXISTS idx_gpt_accounts_email_norm ON gpt_accounts (LOWER(TRIM(email)))'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_gpt_accounts_banned_processed',
+    'CREATE INDEX IF NOT EXISTS idx_gpt_accounts_banned_processed ON gpt_accounts (is_banned, COALESCE(ban_processed, 0))'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_account_email_norm',
+    'CREATE INDEX IF NOT EXISTS idx_redemption_codes_account_email_norm ON redemption_codes (LOWER(TRIM(account_email)))'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_redeemed_by_norm',
+    'CREATE INDEX IF NOT EXISTS idx_redemption_codes_redeemed_by_norm ON redemption_codes (LOWER(TRIM(redeemed_by)))'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_redeemed_by_redeemed_at',
+    `CREATE INDEX IF NOT EXISTS idx_redemption_codes_redeemed_by_redeemed_at
+     ON redemption_codes (LOWER(TRIM(redeemed_by)), redeemed_at)
+     WHERE is_redeemed = 1`
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_redeemed_flags',
+    'CREATE INDEX IF NOT EXISTS idx_redemption_codes_redeemed_flags ON redemption_codes (is_redeemed, redeemed_at)'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_unredeemed_created_at',
+    'CREATE INDEX IF NOT EXISTS idx_redemption_codes_unredeemed_created_at ON redemption_codes (is_redeemed, created_at)'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_account_email_redeemed_at',
+    `CREATE INDEX IF NOT EXISTS idx_redemption_codes_account_email_redeemed_at
+     ON redemption_codes (LOWER(TRIM(account_email)), redeemed_at)
+     WHERE is_redeemed = 1`
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_redemption_codes_reserved_for_order_no',
+    'CREATE INDEX IF NOT EXISTS idx_redemption_codes_reserved_for_order_no ON redemption_codes (reserved_for_order_no)'
+  ) || changed
+
+  return changed
+}
+
 const ensureXhsTables = (database) => {
   if (!database) return false
   let changed = false
@@ -787,12 +879,22 @@ const ensureXhsTables = (database) => {
       }
     }
 
-    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xhs_orders_number ON xhs_orders(order_number)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_status ON xhs_orders(status, created_at)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_usage ON xhs_orders(is_used, created_at)')
-  } catch (error) {
-    console.warn('[DB] 无法初始化 xhs_orders 表:', error)
-  }
+	    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xhs_orders_number ON xhs_orders(order_number)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_status ON xhs_orders(status, created_at)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_usage ON xhs_orders(is_used, created_at)')
+	    changed = ensureIndex(
+	      database,
+	      'idx_xhs_orders_assigned_code_id',
+	      'CREATE INDEX IF NOT EXISTS idx_xhs_orders_assigned_code_id ON xhs_orders(assigned_code_id)'
+	    ) || changed
+	    changed = ensureIndex(
+	      database,
+	      'idx_xhs_orders_assigned_code',
+	      'CREATE INDEX IF NOT EXISTS idx_xhs_orders_assigned_code ON xhs_orders(assigned_code)'
+	    ) || changed
+	  } catch (error) {
+	    console.warn('[DB] 无法初始化 xhs_orders 表:', error)
+	  }
 
   try {
 	    const configExists = database.exec('SELECT name FROM sqlite_master WHERE type="table" AND name="xhs_config"')
@@ -961,12 +1063,22 @@ const ensureXianyuTables = (database) => {
       }
     }
 
-    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xianyu_orders_order_id ON xianyu_orders(order_id)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_status ON xianyu_orders(status, created_at)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_usage ON xianyu_orders(is_used, created_at)')
-  } catch (error) {
-    console.warn('[DB] 无法初始化 xianyu_orders 表:', error)
-  }
+	    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xianyu_orders_order_id ON xianyu_orders(order_id)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_status ON xianyu_orders(status, created_at)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_usage ON xianyu_orders(is_used, created_at)')
+	    changed = ensureIndex(
+	      database,
+	      'idx_xianyu_orders_assigned_code_id',
+	      'CREATE INDEX IF NOT EXISTS idx_xianyu_orders_assigned_code_id ON xianyu_orders(assigned_code_id)'
+	    ) || changed
+	    changed = ensureIndex(
+	      database,
+	      'idx_xianyu_orders_assigned_code',
+	      'CREATE INDEX IF NOT EXISTS idx_xianyu_orders_assigned_code ON xianyu_orders(assigned_code)'
+	    ) || changed
+	  } catch (error) {
+	    console.warn('[DB] 无法初始化 xianyu_orders 表:', error)
+	  }
 
   try {
     const configExists = database.exec('SELECT name FROM sqlite_master WHERE type="table" AND name="xianyu_config"')
@@ -1133,6 +1245,12 @@ const ensureChannelsTable = (database) => {
   }
 
   try {
+    const NON_BUILTIN_KEYS = ['paypal', 'artisan-flow']
+    database.run(
+      `UPDATE channels SET is_builtin = 0, updated_at = DATETIME('now', 'localtime') WHERE key IN (${NON_BUILTIN_KEYS.map(() => '?').join(',')}) AND is_builtin = 1`,
+      NON_BUILTIN_KEYS
+    )
+
     for (const channel of BUILTIN_CHANNELS) {
       const existing = database.exec('SELECT id FROM channels WHERE key = ? LIMIT 1', [channel.key])
       if (existing[0]?.values?.length) continue
@@ -1365,6 +1483,16 @@ const ensureAccountRecoveryTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_email ON account_recovery_logs (email)')
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_original_code ON account_recovery_logs (original_code_id)')
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_status ON account_recovery_logs (status)')
+  changed = ensureIndex(
+    database,
+    'idx_account_recovery_recovery_code_status',
+    'CREATE INDEX IF NOT EXISTS idx_account_recovery_recovery_code_status ON account_recovery_logs (recovery_code_id, status)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_account_recovery_original_status_id',
+    'CREATE INDEX IF NOT EXISTS idx_account_recovery_original_status_id ON account_recovery_logs (original_code_id, status, id DESC)'
+  ) || changed
 
   return changed
 }
@@ -1488,6 +1616,16 @@ const ensurePurchaseOrdersTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_user_created ON purchase_orders(user_id, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_product_created ON purchase_orders(product_key, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_channel_created ON purchase_orders(code_channel, created_at)')
+  changed = ensureIndex(
+    database,
+    'idx_purchase_orders_code_id_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_id_created_desc ON purchase_orders(code_id, created_at DESC)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_purchase_orders_code_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_created_desc ON purchase_orders(code, created_at DESC)'
+  ) || changed
 
   try {
     // Backfill for older orders (best-effort).
@@ -1784,6 +1922,16 @@ const ensureCreditOrdersTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_uid_created ON credit_orders(uid, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_status_created ON credit_orders(status, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_scene ON credit_orders(scene, created_at)')
+  changed = ensureIndex(
+    database,
+    'idx_credit_orders_code_id_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_credit_orders_code_id_created_desc ON credit_orders(code_id, created_at DESC)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_credit_orders_code_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_credit_orders_code_created_desc ON credit_orders(code, created_at DESC)'
+  ) || changed
 
   return changed
 }
@@ -2010,14 +2158,19 @@ export async function initDatabase() {
             )
             saveDatabase()
           }
-        } catch (err) {
-          console.log('列检查/添加已跳过:', err.message)
-        }
+	        } catch (err) {
+	          console.log('列检查/添加已跳过:', err.message)
+	        }
 
-        const migration = migrateUtcTimestampsToLocaltime(database)
-        if (migration.migrated) {
-          await saveDatabase()
-        }
+	        const coreIndexesCreated = ensureCoreIndexes(database)
+	        if (coreIndexesCreated) {
+	          saveDatabase()
+	        }
+
+	        const migration = migrateUtcTimestampsToLocaltime(database)
+	        if (migration.migrated) {
+	          await saveDatabase()
+	        }
 
         return
       }
@@ -2073,10 +2226,10 @@ export async function initDatabase() {
 	  `)
 
   // Create redemption_codes table to manage redemption codes
-  database.run(`
-    CREATE TABLE IF NOT EXISTS redemption_codes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
+	  database.run(`
+	    CREATE TABLE IF NOT EXISTS redemption_codes (
+	      id INTEGER PRIMARY KEY AUTOINCREMENT,
+	      code TEXT UNIQUE NOT NULL,
       is_redeemed INTEGER DEFAULT 0,
       redeemed_at DATETIME,
       redeemed_by TEXT,
@@ -2091,14 +2244,16 @@ export async function initDatabase() {
       reserved_for_entry_id INTEGER,
       reserved_at DATETIME,
       reserved_for_order_no TEXT,
-      reserved_for_order_email TEXT
-    )
-  `)
+	      reserved_for_order_email TEXT
+	    )
+	  `)
 
-  const waitingRoomInitialized = ensureWaitingRoomTable(database)
-  const xhsTablesInitialized = ensureXhsTables(database)
-  const xianyuTablesInitialized = ensureXianyuTables(database)
-  const linuxDoUsersInitialized = ensureLinuxDoUsersTable(database)
+	  ensureCoreIndexes(database)
+
+	  const waitingRoomInitialized = ensureWaitingRoomTable(database)
+	  const xhsTablesInitialized = ensureXhsTables(database)
+	  const xianyuTablesInitialized = ensureXianyuTables(database)
+	  const linuxDoUsersInitialized = ensureLinuxDoUsersTable(database)
   const accountRecoveryInitialized = ensureAccountRecoveryTable(database)
   const purchaseOrdersInitialized = ensurePurchaseOrdersTable(database)
   const creditOrdersInitialized = ensureCreditOrdersTable(database)

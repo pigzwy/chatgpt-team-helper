@@ -66,9 +66,37 @@ const selectedSources = ref<AccountRecoverySourceFilter[]>(sourceOptions.map(ite
 const selectedSourcesParam = computed(() => selectedSources.value.join(','))
 const selectedSourcesKey = computed(() => [...selectedSources.value].slice().sort().join(','))
 const accountsPagination = ref({ page: 1, pageSize: 8, total: 0 })
+const accountsPageSize = computed({
+  get: () => String(accountsPagination.value.pageSize),
+  set: (value) => {
+    const nextPageSize = Number.parseInt(String(value ?? ''), 10)
+    if (!Number.isFinite(nextPageSize)) return
+    const normalized = Math.max(1, Math.min(100, nextPageSize))
+    if (normalized === accountsPagination.value.pageSize) return
+
+    accountsPagination.value.page = 1
+    accountsPagination.value.pageSize = normalized
+    loadAccounts()
+  },
+})
 
 const selectedAccountId = ref<number | null>(null)
 const selectedAccountEmail = ref('')
+const accountSelectionMode = ref(false)
+const selectedAccountIds = ref<number[]>([])
+const accountsCurrentPageIds = computed(() => accounts.value.map(account => account.id))
+const allAccountsSelectedCurrentPage = computed(() => {
+  if (!accountSelectionMode.value) return false
+  const ids = accountsCurrentPageIds.value
+  if (!ids.length) return false
+  const selectedSet = new Set(selectedAccountIds.value)
+  return ids.every(id => selectedSet.has(id))
+})
+const processedAccountIds = computed(() => {
+  if (accountSelectionMode.value) return selectedAccountIds.value
+  const accountId = selectedAccountId.value
+  return accountId != null ? [accountId] : []
+})
 
 const redeems = ref<AccountRecoveryBannedAccountRedeem[]>([])
 const redeemsLoading = ref(false)
@@ -78,6 +106,7 @@ const redeemsStatus = ref<'pending' | 'failed' | 'done' | 'all'>('pending')
 const redeemsPagination = ref({ page: 1, pageSize: 8, total: 0 })
 
 	const selectedOriginalCodeIds = ref<number[]>([])
+const sourcePopoverOpen = ref(false)
 	const recovering = ref(false)
 	const markingProcessed = ref(false)
 
@@ -251,7 +280,41 @@ const selectAccount = (account: AccountRecoveryBannedAccountSummary) => {
   loadRedeems()
 }
 
+const toggleAccountSelectionMode = () => {
+  accountSelectionMode.value = !accountSelectionMode.value
+  if (!accountSelectionMode.value) {
+    selectedAccountIds.value = []
+  }
+}
+
+const toggleAccountSelected = (accountId: number) => {
+  const index = selectedAccountIds.value.indexOf(accountId)
+  if (index >= 0) {
+    selectedAccountIds.value.splice(index, 1)
+  } else {
+    selectedAccountIds.value.push(accountId)
+  }
+}
+
+const toggleSelectAllAccountsCurrentPage = () => {
+  const ids = accountsCurrentPageIds.value
+  if (!ids.length) return
+
+  const selectedSet = new Set(selectedAccountIds.value)
+  const allSelected = ids.every(id => selectedSet.has(id))
+  if (allSelected) {
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => !ids.includes(id))
+    return
+  }
+
+  for (const id of ids) {
+    selectedSet.add(id)
+  }
+  selectedAccountIds.value = Array.from(selectedSet)
+}
+
 const handleAccountsSearch = () => {
+  selectedAccountIds.value = []
   accountsPagination.value.page = 1
   loadAccounts()
 }
@@ -263,11 +326,13 @@ const goToAccountsPage = (page: number) => {
 }
 
 watch(accountsFilter, () => {
+  selectedAccountIds.value = []
   accountsPagination.value.page = 1
   loadAccounts()
 })
 
 watch(selectedSourcesKey, async () => {
+  selectedAccountIds.value = []
   accountsPagination.value.page = 1
   redeemsPagination.value.page = 1
   selectedOriginalCodeIds.value = []
@@ -301,6 +366,7 @@ watch(oneClickSource, async () => {
 })
 
 watch(days, async () => {
+  selectedAccountIds.value = []
   accountsPagination.value.page = 1
   redeemsPagination.value.page = 1
   selectedOriginalCodeIds.value = []
@@ -527,23 +593,41 @@ const runOneClick = async () => {
   }
 }
 
-	const markSelectedAccountProcessed = async () => {
-	  const accountId = selectedAccountId.value
-	  if (!accountId) {
-	    showWarningToast('请先选择封号账号')
+	const markSelectedAccountsProcessed = async () => {
+	  const ids = Array.isArray(processedAccountIds.value)
+	    ? [...new Set(processedAccountIds.value)]
+	        .map(value => Number(value))
+	        .filter(value => Number.isFinite(value) && value > 0)
+	    : []
+
+	  if (!ids.length) {
+	    showWarningToast(accountSelectionMode.value ? '请选择要标记的封号账号' : '请先选择封号账号')
+	    return
+	  }
+
+	  const confirmMessage =
+	    ids.length === 1 ? '确定要标记该账号已处理吗？' : `确定要标记选中的 ${ids.length} 个账号已处理吗？`
+	  if (!confirm(confirmMessage)) {
 	    return
 	  }
 
 	  markingProcessed.value = true
 	  try {
-	    await accountRecoveryAdminService.setBannedAccountProcessed(accountId, true)
-	    showSuccessToast('已标记为已处理')
+	    if (ids.length === 1) {
+	      await accountRecoveryAdminService.setBannedAccountProcessed(ids[0]!, true)
+	      showSuccessToast('已标记为已处理')
+	    } else {
+	      const response = await accountRecoveryAdminService.setBannedAccountsProcessed(ids, true)
+	      const updatedCount = Math.max(0, Number(response.updatedCount || 0) || ids.length)
+	      const skippedCount = Math.max(0, ids.length - updatedCount)
+	      if (skippedCount > 0) {
+	        showSuccessToast(`已标记 ${updatedCount} 个账号为已处理，跳过 ${skippedCount} 个`)
+	      } else {
+	        showSuccessToast(`已标记 ${updatedCount} 个账号为已处理`)
+	      }
+	    }
 
-	    selectedAccountId.value = null
-	    selectedAccountEmail.value = ''
-	    selectedOriginalCodeIds.value = []
-	    redeems.value = []
-	    redeemsPagination.value = { page: 1, pageSize: redeemsPagination.value.pageSize, total: 0 }
+	    selectedAccountIds.value = []
 	    await loadAccounts()
 	  } catch (err: any) {
 	    showErrorToast(err.response?.data?.error || '标记失败')
@@ -587,11 +671,12 @@ const reloadAll = async () => {
 		        <Button
 		          variant="outline"
 		          class="rounded-xl"
-		          :disabled="!selectedAccountId || accountsLoading || redeemsLoading || recovering || markingProcessed || oneClickProcessing"
-		          @click="markSelectedAccountProcessed"
+		          :disabled="processedAccountIds.length === 0 || accountsLoading || redeemsLoading || recovering || markingProcessed || oneClickProcessing"
+		          @click="markSelectedAccountsProcessed"
 		        >
 		          <BadgeCheck class="w-4 h-4 mr-2" />
 		          标记已处理
+		          <span v-if="accountSelectionMode && processedAccountIds.length" class="ml-1">({{ processedAccountIds.length }})</span>
 		        </Button>
 		        <Button
 		          class="rounded-xl bg-blue-600 hover:bg-blue-700 text-white"
@@ -621,12 +706,114 @@ const reloadAll = async () => {
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <!-- 左：封号账号 -->
-      <div class="bg-white rounded-[32px] shadow-sm border border-gray-100 overflow-hidden">
+      <div class="bg-white rounded-[32px] shadow-sm border border-gray-100 flex flex-col max-h-[calc(100vh-240px)] overflow-hidden">
         <div class="p-6 border-b border-gray-100">
           <div class="flex items-center justify-between gap-4">
             <div>
               <h3 class="text-lg font-semibold text-gray-900">封号账号</h3>
               <p class="text-xs text-gray-500 mt-1">近 {{ daysNumber }} 天存在影响记录</p>
+            </div>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border transition-all duration-150 select-none"
+                :class="accountSelectionMode
+                  ? 'bg-blue-50 border-blue-200 text-blue-600'
+                  : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:border-gray-300'"
+                @click="toggleAccountSelectionMode"
+              >
+                <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 3h10v10H3z" stroke-linejoin="round"/>
+                  <path d="M5.5 8l1.5 1.5L10.5 6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                {{ accountSelectionMode ? '取消选择' : '选择' }}
+                <span
+                  v-if="accountSelectionMode && selectedAccountIds.length"
+                  class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-white text-[10px] font-semibold leading-none"
+                >{{ selectedAccountIds.length }}</span>
+              </button>
+
+              <button
+                v-if="accountSelectionMode"
+                type="button"
+                class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border transition-all duration-150 select-none"
+                :class="allAccountsSelectedCurrentPage
+                  ? 'bg-blue-50 border-blue-200 text-blue-600'
+                  : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:border-gray-300'"
+                @click="toggleSelectAllAccountsCurrentPage"
+              >
+                {{ allAccountsSelectedCurrentPage ? '取消全选' : '全选' }}
+              </button>
+
+              <!-- 来源筛选器 -->
+              <div
+                class="relative flex-shrink-0"
+                @mouseenter="sourcePopoverOpen = true"
+                @mouseleave="sourcePopoverOpen = false"
+              >
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border transition-all duration-150 select-none"
+                  :class="selectedSources.length < sourceOptions.length
+                    ? 'bg-blue-50 border-blue-200 text-blue-600'
+                    : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:border-gray-300'"
+                >
+                  <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M2 4h12M4 8h8M6 12h4" stroke-linecap="round"/>
+                  </svg>
+                  来源
+                  <span
+                    v-if="selectedSources.length < sourceOptions.length"
+                    class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-white text-[10px] font-semibold leading-none"
+                  >{{ selectedSources.length }}</span>
+                  <svg class="w-3 h-3 opacity-50 transition-transform duration-150" :class="sourcePopoverOpen ? 'rotate-180' : ''" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 6l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+
+                <!-- hover 展开的来源选项浮层 -->
+                <Transition
+                  enter-active-class="transition-all duration-150 ease-out"
+                  enter-from-class="opacity-0 -translate-y-1 scale-95"
+                  enter-to-class="opacity-100 translate-y-0 scale-100"
+                  leave-active-class="transition-all duration-100 ease-in"
+                  leave-from-class="opacity-100 translate-y-0 scale-100"
+                  leave-to-class="opacity-0 -translate-y-1 scale-95"
+                >
+                  <div
+                    v-show="sourcePopoverOpen"
+                    class="absolute right-0 top-full mt-2 z-50 bg-white border border-gray-100 rounded-2xl shadow-xl shadow-black/[0.08] overflow-hidden min-w-[148px]"
+                  >
+                    <div class="px-3 pt-3 pb-2">
+                      <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">筛选来源</p>
+                      <div class="flex flex-col gap-0.5">
+                        <label
+                          v-for="item in sourceOptions"
+                          :key="item.value"
+                          class="group/item flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer transition-colors hover:bg-gray-50 whitespace-nowrap"
+                        >
+                          <input
+                            v-model="selectedSources"
+                            type="checkbox"
+                            class="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-400 focus:ring-1 focus:ring-offset-0 cursor-pointer"
+                            :value="item.value"
+                          />
+                          <span class="text-xs text-gray-600 group-hover/item:text-gray-900 transition-colors">{{ item.label }}</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div class="border-t border-gray-50 px-3 py-2">
+                      <button
+                        type="button"
+                        class="w-full text-[11px] text-gray-400 hover:text-blue-500 transition-colors text-left"
+                        @click="selectedSources = selectedSources.length === sourceOptions.length ? [] : sourceOptions.map(o => o.value)"
+                      >
+                        {{ selectedSources.length === sourceOptions.length ? '取消全选' : '全选' }}
+                      </button>
+                    </div>
+                  </div>
+                </Transition>
+              </div>
             </div>
           </div>
           <div class="mt-4 flex flex-col sm:flex-row gap-3">
@@ -650,64 +837,59 @@ const reloadAll = async () => {
               </SelectContent>
             </Select>
           </div>
-
-          <div class="mt-4 flex flex-wrap items-center gap-3">
-            <span class="text-xs font-medium text-gray-500">来源</span>
-            <label
-              v-for="item in sourceOptions"
-              :key="item.value"
-              class="inline-flex items-center gap-2 text-xs text-gray-700 select-none"
-            >
-              <input
-                v-model="selectedSources"
-                type="checkbox"
-                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                :value="item.value"
-              />
-              <span>{{ item.label }}</span>
-            </label>
-          </div>
         </div>
 
         <div v-if="accountsError" class="p-4 text-sm text-red-600 border-b border-gray-100">
           {{ accountsError }}
         </div>
 
-        <div v-if="accountsLoading" class="flex flex-col items-center justify-center py-16">
-          <div class="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
-          <p class="text-gray-400 text-sm font-medium mt-4">正在加载…</p>
-        </div>
+        <div class="flex-1 min-h-0 overflow-y-auto">
+          <div v-if="accountsLoading" class="flex flex-col items-center justify-center py-16">
+            <div class="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+            <p class="text-gray-400 text-sm font-medium mt-4">正在加载…</p>
+          </div>
 
-        <div v-else-if="accounts.length === 0" class="p-10 text-center text-sm text-gray-500">
-          暂无数据
-        </div>
+          <div v-else-if="accounts.length === 0" class="p-10 text-center text-sm text-gray-500">
+            暂无数据
+          </div>
 
-        <div v-else class="divide-y divide-gray-50">
-          <button
-            v-for="account in accounts"
-            :key="account.id"
-            class="w-full text-left p-5 hover:bg-blue-50/30 transition-colors"
-            :class="selectedAccountId === account.id ? 'bg-blue-50/40' : ''"
-            @click="selectAccount(account)"
-          >
-            <div class="flex items-start justify-between gap-4">
-              <div class="min-w-0">
-                <div class="text-sm font-semibold text-gray-900 truncate">{{ account.email }}</div>
-                <div class="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
-                  <span>影响 {{ account.impactedCount }}</span>
-                  <span class="text-amber-700">待 {{ account.pendingCount }}</span>
-                  <span class="text-red-600">失败 {{ account.failedCount }}</span>
-                  <span class="text-green-700">完成 {{ account.doneCount }}</span>
+          <div v-else class="divide-y divide-gray-50">
+            <button
+              v-for="account in accounts"
+              :key="account.id"
+              class="w-full text-left p-5 hover:bg-blue-50/30 transition-colors"
+              :class="selectedAccountId === account.id ? 'bg-blue-50/40' : ''"
+              @click="selectAccount(account)"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div class="flex items-start gap-3 min-w-0">
+                  <input
+                    v-if="accountSelectionMode"
+                    type="checkbox"
+                    class="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-500 focus:ring-blue-400 focus:ring-1 focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                    :checked="selectedAccountIds.includes(account.id)"
+                    @click.stop
+                    @change.stop="toggleAccountSelected(account.id)"
+                  />
+                  <div class="min-w-0">
+                    <div class="text-sm font-semibold text-gray-900 truncate">{{ account.email }}</div>
+                    <div class="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                      <span>影响 {{ account.impactedCount }}</span>
+                      <span class="text-amber-700">待 {{ account.pendingCount }}</span>
+                      <span class="text-red-600">失败 {{ account.failedCount }}</span>
+                      <span class="text-green-700">完成 {{ account.doneCount }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="text-xs text-gray-400 whitespace-nowrap">
+                  {{ formatShanghaiDate(account.latestRedeemedAt, dateFormatOptions) }}
                 </div>
               </div>
-              <div class="text-xs text-gray-400 whitespace-nowrap">
-                {{ formatShanghaiDate(account.latestRedeemedAt, dateFormatOptions) }}
-              </div>
-            </div>
-          </button>
+            </button>
+          </div>
         </div>
 
-        <div class="p-4 border-t border-gray-100 flex items-center justify-between">
+        <div class="p-4 border-t border-gray-100 flex items-center justify-between gap-3 flex-wrap">
           <Button
             variant="ghost"
             class="rounded-xl"
@@ -717,9 +899,27 @@ const reloadAll = async () => {
             <ChevronLeft class="w-4 h-4 mr-1" />
             上一页
           </Button>
-          <div class="text-xs text-gray-500">
-            第 {{ accountsPagination.page }} / {{ accountsTotalPages }} 页 · {{ accountsPagination.total }} 条
+
+          <div class="flex items-center gap-3 flex-wrap justify-center">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-gray-500">每页</span>
+              <Select v-model="accountsPageSize" :disabled="accountsLoading">
+                <SelectTrigger class="h-8 w-[90px] bg-white border-transparent shadow-[0_2px_10px_rgba(0,0,0,0.03)] rounded-xl">
+                  <SelectValue placeholder="条数" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="8">8</SelectItem>
+                  <SelectItem value="20">20</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="text-xs text-gray-500 whitespace-nowrap">
+              第 {{ accountsPagination.page }} / {{ accountsTotalPages }} 页 · {{ accountsPagination.total }} 条
+            </div>
           </div>
+
           <Button
             variant="ghost"
             class="rounded-xl"

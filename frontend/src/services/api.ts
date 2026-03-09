@@ -934,6 +934,18 @@ export interface AdminFeatureFlagsResponse {
   }
 }
 
+export interface AdminAccountRecoverySettingsResponse {
+  settings: {
+    forceTodayCodes: boolean
+    codeWindowDays: number
+    requireExpireCoverDeadline: boolean
+  }
+  effective: {
+    codeCreatedWithinDays: number
+    requireExpireCoverDeadline: boolean
+  }
+}
+
 export interface AdminPointsWithdrawSettingsResponse {
   rate: {
     points: number
@@ -1127,6 +1139,22 @@ export const adminService = {
     }
   }): Promise<AdminFeatureFlagsResponse> {
     const response = await api.put('/admin/feature-flags', payload)
+    return response.data
+  },
+
+  async getAccountRecoverySettings(): Promise<AdminAccountRecoverySettingsResponse> {
+    const response = await api.get('/admin/account-recovery-settings')
+    return response.data
+  },
+
+  async updateAccountRecoverySettings(payload: {
+    settings: {
+      forceTodayCodes: boolean
+      codeWindowDays: number
+      requireExpireCoverDeadline: boolean
+    }
+  }): Promise<AdminAccountRecoverySettingsResponse> {
+    const response = await api.put('/admin/account-recovery-settings', payload)
     return response.data
   },
 
@@ -1500,6 +1528,13 @@ export interface AccountRecoveryBannedAccountProcessedResponse {
   }
 }
 
+export interface AccountRecoveryBannedAccountsBatchProcessedResponse {
+  requestedCount: number
+  updatedCount: number
+  missingIds: number[]
+  notBannedIds: number[]
+}
+
 export interface AccountRecoveryOneClickPreviewParams {
   source: Exclude<AccountRecoveryRedeemSource, ''>
   days?: number
@@ -1549,6 +1584,14 @@ export const accountRecoveryAdminService = {
 
   async setBannedAccountProcessed(accountId: number, processed: boolean = true): Promise<AccountRecoveryBannedAccountProcessedResponse> {
     const response = await api.patch(`/admin/account-recovery/banned-accounts/${accountId}/processed`, { processed })
+    return response.data
+  },
+
+  async setBannedAccountsProcessed(
+    accountIds: number[],
+    processed: boolean = true,
+  ): Promise<AccountRecoveryBannedAccountsBatchProcessedResponse> {
+    const response = await api.patch('/admin/account-recovery/banned-accounts/processed', { accountIds, processed })
     return response.data
   },
 }

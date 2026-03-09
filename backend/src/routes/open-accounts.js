@@ -439,21 +439,21 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
 	               ga.expire_at,
 	               code_stats.remaining_codes
 	        FROM gpt_accounts ga
-        JOIN (
-          SELECT lower(account_email) AS account_email_lower,
-                 COUNT(*) AS remaining_codes
-          FROM redemption_codes
-          WHERE is_redeemed = 0
-            AND channel = 'linux-do'
+	        JOIN (
+	          SELECT lower(trim(account_email)) AS account_email_lower,
+	                 COUNT(*) AS remaining_codes
+	          FROM redemption_codes
+	          WHERE is_redeemed = 0
+	            AND channel = 'linux-do'
             AND account_email IS NOT NULL
             AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
             AND (reserved_for_entry_id IS NULL OR reserved_for_entry_id = 0)
             AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
-          GROUP BY lower(account_email)
-        ) code_stats ON lower(ga.email) = code_stats.account_email_lower
-	        WHERE ga.is_open = 1
-	          AND COALESCE(ga.is_banned, 0) = 0
-	          AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < 5
+	          GROUP BY lower(trim(account_email))
+	        ) code_stats ON lower(trim(ga.email)) = code_stats.account_email_lower
+		        WHERE ga.is_open = 1
+		          AND COALESCE(ga.is_banned, 0) = 0
+		          AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < 5
 	          ${threshold ? "AND ga.created_at >= DATETIME('now', 'localtime', ?)" : ''}
 	        ORDER BY ga.created_at DESC
 	      `,
@@ -502,15 +502,15 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
 	        const remainingResult = db.exec(
 	          `
 	            SELECT COUNT(*)
-            FROM redemption_codes
-            WHERE is_redeemed = 0
-              AND channel = 'linux-do'
-              AND account_email IS NOT NULL
-              AND lower(account_email) = ?
-              AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
-              AND (reserved_for_entry_id IS NULL OR reserved_for_entry_id = 0)
-              AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
-          `,
+	            FROM redemption_codes
+	            WHERE is_redeemed = 0
+	              AND channel = 'linux-do'
+	              AND account_email IS NOT NULL
+	              AND lower(trim(account_email)) = ?
+	              AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
+	              AND (reserved_for_entry_id IS NULL OR reserved_for_entry_id = 0)
+	              AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
+	          `,
           [String(email || '').trim().toLowerCase()]
 	        )
 	        const remainingCodes = Number(remainingResult[0]?.values?.[0]?.[0] || 0)

@@ -7,6 +7,7 @@ import { useAppConfigStore } from '@/stores/appConfig'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import NativeDateInput from '@/components/ui/apple/NativeDateInput.vue'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -163,12 +164,12 @@ onMounted(async () => {
 
           <div class="space-y-1">
             <Label class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">开始</Label>
-            <Input v-model="rangeFrom" type="date" class="h-10 w-full bg-white border-gray-200 rounded-xl sm:w-[160px]" />
+            <NativeDateInput v-model="rangeFrom" placeholder="开始日期" class="w-full sm:w-[160px]" />
           </div>
 
           <div class="space-y-1">
             <Label class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">结束</Label>
-            <Input v-model="rangeTo" type="date" class="h-10 w-full bg-white border-gray-200 rounded-xl sm:w-[160px]" />
+            <NativeDateInput v-model="rangeTo" placeholder="结束日期" class="w-full sm:w-[160px]" />
           </div>
         </div>
 
@@ -345,7 +346,7 @@ onMounted(async () => {
           <div class="rounded-2xl border border-gray-100 overflow-hidden">
             <div class="px-5 py-4 bg-gray-50/50 border-b border-gray-100">
               <h4 class="text-sm font-semibold text-gray-900">订单概览（区间）</h4>
-              <p class="text-xs text-gray-400 mt-0.5">支付订单 + Credit 订单</p>
+              <p class="text-xs text-gray-400 mt-0.5">支付订单 + Credit 订单 + 小红书 + 闲鱼</p>
             </div>
             <div class="p-5 space-y-4">
               <div class="flex items-center justify-between">
@@ -370,6 +371,36 @@ onMounted(async () => {
                 <div class="text-right">
                   <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">已付金额</p>
                   <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoney(overview.creditOrders.paidAmount) }}</p>
+                </div>
+              </div>
+
+              <div class="h-px bg-gray-100"></div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">小红书订单</p>
+                  <p class="text-sm text-gray-600 mt-1">
+                    总 {{ formatNumber(overview.xhsOrders.total) }} · 待核销 {{ formatNumber(overview.xhsOrders.pending) }} · 已核销 {{ formatNumber(overview.xhsOrders.used) }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">订单金额</p>
+                  <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoneyInt(overview.xhsOrders.amount.range) }}</p>
+                </div>
+              </div>
+
+              <div class="h-px bg-gray-100"></div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">闲鱼订单</p>
+                  <p class="text-sm text-gray-600 mt-1">
+                    总 {{ formatNumber(overview.xianyuOrders.total) }} · 待核销 {{ formatNumber(overview.xianyuOrders.pending) }} · 已核销 {{ formatNumber(overview.xianyuOrders.used) }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">订单金额</p>
+                  <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoneyInt(overview.xianyuOrders.amount.range) }}</p>
                 </div>
               </div>
             </div>

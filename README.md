@@ -480,7 +480,7 @@ TURNSTILE_TIMEOUT_MS=5000
 
 ### 代理配置
 
-用于 OpenAI API 调用、开放账号上车、邀请同步等场景。
+用于 OpenAI API 调用、开放账号上车、邀请同步等场景（同一账号会稳定散列到某个代理，以便均衡分摊）。
 
 ```env
 # 代理池（逗号分隔，支持 http/https/socks5/socks5h）

@@ -444,12 +444,12 @@ const getTodayAvailableCodeCount = (db, { channel } = {}) => {
   const resolvedChannel = String(channel || CODE_CHANNEL_COMMON).trim().toLowerCase() || CODE_CHANNEL_COMMON
   const result = db.exec(
     `
-      SELECT COUNT(*)
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
-        AND rc.account_email IS NOT NULL
+	      SELECT COUNT(*)
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
+	        AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
         AND ga.user_count < 6
         AND DATE(ga.created_at) = DATE('now', 'localtime')
@@ -465,12 +465,12 @@ const reserveTodayCode = (db, { orderNo, email, channel } = {}) => {
   const resolvedChannel = String(channel || CODE_CHANNEL_COMMON).trim().toLowerCase() || CODE_CHANNEL_COMMON
   const row = db.exec(
     `
-      SELECT rc.id, rc.code, rc.account_email
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
-        AND rc.account_email IS NOT NULL
+	      SELECT rc.id, rc.code, rc.account_email
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
+	        AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
         AND ga.user_count < 6
         AND DATE(ga.created_at) = DATE('now', 'localtime')
