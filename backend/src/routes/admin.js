@@ -3717,4 +3717,99 @@ router.delete('/purchase-products/:productKey', async (req, res) => {
   }
 })
 
+// ==================== 代理配置 ====================
+
+/**
+ * GET /api/admin/proxy
+ * 获取代理配置
+ */
+router.get('/proxy', async (req, res) => {
+  try {
+    const { getProxySettings } = await import('../utils/proxy-settings.js')
+    const settings = await getProxySettings()
+    res.json({
+      proxies: settings.proxies,
+      mode: settings.mode
+    })
+  } catch (error) {
+    console.error('[Admin] get proxy error:', error)
+    res.status(500).json({ error: '加载代理配置失败' })
+  }
+})
+
+/**
+ * POST /api/admin/proxy
+ * 更新代理配置
+ */
+router.post('/proxy', async (req, res) => {
+  try {
+    const { proxies, mode } = req.body || {}
+
+    // 验证模式
+    if (mode && !['single', 'pool'].includes(mode)) {
+      return res.status(400).json({ error: '代理模式必须是 single 或 pool' })
+    }
+
+    // 验证代理格式
+    if (proxies && Array.isArray(proxies)) {
+      const { isValidProxyUrl } = await import('../utils/proxy-settings.js')
+      for (const proxy of proxies) {
+        if (proxy && !isValidProxyUrl(proxy)) {
+          return res.status(400).json({ error: `代理地址格式无效: ${proxy}` })
+        }
+      }
+    }
+
+    const { updateProxySettings } = await import('../utils/proxy-settings.js')
+    await updateProxySettings({ proxies, mode })
+
+    res.json({
+      message: '代理配置已更新',
+      proxies: proxies || [],
+      mode: mode || 'single'
+    })
+  } catch (error) {
+    console.error('[Admin] update proxy error:', error)
+    res.status(500).json({ error: '更新代理配置失败' })
+  }
+})
+
+/**
+ * POST /api/admin/proxy/test
+ * 测试代理连接
+ */
+router.post('/proxy/test', async (req, res) => {
+  try {
+    const { proxies, testUrl } = req.body || {}
+
+    if (!proxies || !Array.isArray(proxies) || proxies.length === 0) {
+      return res.status(400).json({ error: '请提供要测试的代理列表' })
+    }
+
+    // 限制同时测试的代理数量
+    const maxTestCount = 20
+    if (proxies.length > maxTestCount) {
+      return res.status(400).json({ error: `最多同时测试 ${maxTestCount} 个代理` })
+    }
+
+    const { testMultipleProxies } = await import('../utils/proxy-settings.js')
+    const results = await testMultipleProxies(proxies, testUrl)
+
+    res.json({
+      results,
+      summary: {
+        total: results.length,
+        success: results.filter(r => r.success).length,
+        failed: results.filter(r => !r.success).length,
+        avgLatency: results.length > 0
+          ? Math.round(results.filter(r => r.success).reduce((sum, r) => sum + (r.latency || 0), 0) / results.filter(r => r.success).length) || 0
+          : 0
+      }
+    })
+  } catch (error) {
+    console.error('[Admin] test proxy error:', error)
+    res.status(500).json({ error: '测试代理失败' })
+  }
+})
+
 export default router

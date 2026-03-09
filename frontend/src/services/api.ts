@@ -541,6 +541,28 @@ export interface MasterRedemptionConfig {
   code: string
 }
 
+export interface ProxyConfig {
+  proxies: string[]
+  mode: 'single' | 'pool'
+}
+
+export interface ProxyTestResult {
+  proxy: string
+  success: boolean
+  latency?: number
+  error?: string
+}
+
+export interface ProxyTestResponse {
+  results: ProxyTestResult[]
+  summary: {
+    total: number
+    success: number
+    failed: number
+    avgLatency: number
+  }
+}
+
 export interface PurchaseMeta {
   productName: string
   amount: string
@@ -1407,6 +1429,25 @@ export const adminService = {
 
   async deletePurchaseProduct(productKey: string): Promise<{ product: PurchaseProduct }> {
     const response = await api.delete(`/admin/purchase-products/${encodeURIComponent(productKey)}`)
+    return response.data
+  },
+
+  // ==================== 代理配置 ====================
+  async getProxySettings(): Promise<ProxyConfig> {
+    const response = await api.get('/admin/proxy')
+    return response.data
+  },
+
+  async updateProxySettings(payload: {
+    proxies?: string[]
+    mode?: 'single' | 'pool'
+  }): Promise<{ message: string; proxies: string[]; mode: string }> {
+    const response = await api.post('/admin/proxy', payload)
+    return response.data
+  },
+
+  async testProxy(proxies: string[], testUrl?: string): Promise<ProxyTestResponse> {
+    const response = await api.post('/admin/proxy/test', { proxies, testUrl })
     return response.data
   },
 }

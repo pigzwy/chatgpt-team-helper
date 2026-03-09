@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnnouncementAdminPanel from '@/components/AnnouncementAdminPanel.vue'
-import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw, Settings, CreditCard, Link, Mail, Shield } from 'lucide-vue-next'
+import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw, Settings, CreditCard, Link, Mail, Shield, Globe } from 'lucide-vue-next'
 
 const teleportReady = ref(false)
 const activeTab = ref<'settings' | 'announcements'>('settings')
@@ -159,6 +159,16 @@ const emailDomainWhitelistError = ref('')
 const emailDomainWhitelistSuccess = ref('')
 const emailDomainWhitelistLoading = ref(false)
 
+// 代理配置（仅超级管理员）
+const proxyProxies = ref('')
+const proxyMode = ref<'single' | 'pool'>('single')
+const proxyError = ref('')
+const proxySuccess = ref('')
+const proxyLoading = ref(false)
+const proxyTestResults = ref<Array<{ proxy: string; success: boolean; latency?: number; error?: string }>>([])
+const proxyTesting = ref(false)
+const proxyTestSummary = ref<{ total: number; success: number; failed: number; avgLatency: number } | null>(null)
+
 // 积分提现设置（仅超级管理员）
 const pointsWithdrawRatePoints = ref('1')
 const pointsWithdrawRateCashYuan = ref('1.00')
@@ -266,6 +276,7 @@ onMounted(async () => {
     loadTurnstileSettings(),
     loadTelegramSettings(),
     loadMasterRedemptionCode(),
+    loadProxySettings(),
   ])
 })
 
@@ -689,6 +700,85 @@ const saveMasterRedemptionCode = async () => {
     masterRedemptionError.value = err.response?.data?.error || '更新失败，请重试'
   } finally {
     masterRedemptionLoading.value = false
+  }
+}
+
+// 代理配置相关方法
+const loadProxySettings = async () => {
+  try {
+    const response = await adminService.getProxySettings()
+    proxyProxies.value = (response.proxies || []).join('\n')
+    proxyMode.value = response.mode || 'single'
+  } catch (err: any) {
+    console.error('加载代理配置失败:', err)
+  }
+}
+
+const saveProxySettings = async () => {
+  proxyError.value = ''
+  proxySuccess.value = ''
+
+  // 解析代理列表
+  const proxies = proxyProxies.value
+    .split(/[\r\n]+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  // 验证代理格式
+  const proxyRegex = /^(https?|socks[45]?):\/\/[^:]+:\d+$/
+  for (const proxy of proxies) {
+    if (!proxyRegex.test(proxy)) {
+      proxyError.value = `代理地址格式无效: ${proxy}`
+      return
+    }
+  }
+
+  proxyLoading.value = true
+  try {
+    await adminService.updateProxySettings({
+      proxies,
+      mode: proxyMode.value
+    })
+    proxySuccess.value = '代理配置已保存'
+    setTimeout(() => (proxySuccess.value = ''), 3000)
+  } catch (err: any) {
+    proxyError.value = err.response?.data?.error || '保存失败，请重试'
+  } finally {
+    proxyLoading.value = false
+  }
+}
+
+const testProxies = async () => {
+  proxyError.value = ''
+  proxyTestResults.value = []
+  proxyTestSummary.value = null
+  proxyTesting.value = true
+
+  const proxies = proxyProxies.value
+    .split(/[\r\n]+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  if (proxies.length === 0) {
+    proxyError.value = '请输入要测试的代理地址'
+    proxyTesting.value = false
+    return
+  }
+
+  if (proxies.length > 20) {
+    proxyError.value = '最多同时测试 20 个代理'
+    proxyTesting.value = false
+    return
+  }
+
+  try {
+    const response = await adminService.testProxy(proxies)
+    proxyTestResults.value = response.results
+    proxyTestSummary.value = response.summary
+  } catch (err: any) {
+    proxyError.value = err.response?.data?.error || '测试失败，请重试'
+  } finally {
+    proxyTesting.value = false
   }
 }
 
@@ -1456,6 +1546,106 @@ const savePointsWithdrawSettings = async () => {
                   >
                     {{ masterRedemptionLoading ? '保存中...' : '保存万能兑换码' }}
                   </Button>
+                </CardContent>
+              </Card>
+
+              <!-- 代理配置（仅超级管理员） -->
+              <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+                <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+                  <CardTitle class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <Globe class="w-5 h-5" />
+                    代理配置
+                  </CardTitle>
+                  <CardDescription class="text-gray-500">配置 HTTP/HTTPS/SOCKS 代理，用于访问 ChatGPT API</CardDescription>
+                </CardHeader>
+                <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+                  <div class="space-y-2">
+                    <Label for="proxyMode" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">代理模式</Label>
+                    <Select v-model="proxyMode" :disabled="proxyLoading">
+                      <SelectTrigger id="proxyMode" class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all">
+                        <SelectValue placeholder="选择模式" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="single">单个代理</SelectItem>
+                        <SelectItem value="pool">代理池</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p class="text-xs text-gray-400">
+                      {{ proxyMode === 'single' ? '单个代理模式：使用第一个可用代理' : '代理池模式：自动轮换使用可用代理' }}
+                    </p>
+                  </div>
+
+                  <div class="space-y-2">
+                    <Label for="proxyProxies" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">代理地址</Label>
+                    <textarea
+                      id="proxyProxies"
+                      v-model="proxyProxies"
+                      rows="5"
+                      placeholder="http://proxy.example.com:8080&#10;https://user:pass@proxy.example.com:8080&#10;socks5://proxy.example.com:1080"
+                      :disabled="proxyLoading || proxyTesting"
+                      class="w-full h-32 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm p-3 resize-none disabled:opacity-50 disabled:cursor-not-allowed"
+                    ></textarea>
+                    <p class="text-xs text-gray-400">每行一个代理地址，支持 http://、https://、socks4://、socks5:// 协议</p>
+                  </div>
+
+                  <div v-if="proxyError" class="rounded-xl bg-red-50 p-4 flex items-center gap-3 text-red-600 border border-red-100">
+                    <AlertCircle class="w-5 h-5 flex-shrink-0" />
+                    <span class="text-sm font-medium">{{ proxyError }}</span>
+                  </div>
+
+                  <div v-if="proxySuccess" class="rounded-xl bg-green-50 p-4 flex items-center gap-3 text-green-600 border border-green-100">
+                    <CheckCircle2 class="w-5 h-5 flex-shrink-0" />
+                    <span class="text-sm font-medium">{{ proxySuccess }}</span>
+                  </div>
+
+                  <!-- 测试结果 -->
+                  <div v-if="proxyTestResults.length > 0" class="rounded-xl bg-gray-50 border border-gray-200 p-4 space-y-3">
+                    <div v-if="proxyTestSummary" class="flex items-center gap-4 text-sm">
+                      <span class="text-gray-600">总计: {{ proxyTestSummary.total }}</span>
+                      <span class="text-green-600">成功: {{ proxyTestSummary.success }}</span>
+                      <span class="text-red-600">失败: {{ proxyTestSummary.failed }}</span>
+                      <span v-if="proxyTestSummary.avgLatency > 0" class="text-gray-600">平均延迟: {{ proxyTestSummary.avgLatency }}ms</span>
+                    </div>
+                    <div class="space-y-2 max-h-40 overflow-y-auto">
+                      <div
+                        v-for="(result, idx) in proxyTestResults"
+                        :key="idx"
+                        class="flex items-center gap-2 text-sm p-2 rounded-lg bg-white"
+                        :class="result.success ? 'border border-green-200' : 'border border-red-200'"
+                      >
+                        <span class="flex-1 font-mono text-xs truncate">{{ result.proxy }}</span>
+                        <span v-if="result.success" class="text-green-600 flex items-center gap-1">
+                          <CheckCircle2 class="w-4 h-4" />
+                          {{ result.latency }}ms
+                        </span>
+                        <span v-else class="text-red-600 flex items-center gap-1">
+                          <AlertCircle class="w-4 h-4" />
+                          {{ result.error || '失败' }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex gap-3">
+                    <Button
+                      type="button"
+                      @click="saveProxySettings"
+                      :disabled="proxyLoading || proxyTesting"
+                      class="flex-1 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-200"
+                    >
+                      {{ proxyLoading ? '保存中...' : '保存配置' }}
+                    </Button>
+                    <Button
+                      type="button"
+                      @click="testProxies"
+                      :disabled="proxyLoading || proxyTesting"
+                      variant="outline"
+                      class="h-11 rounded-xl border-gray-300 hover:bg-gray-50"
+                    >
+                      <RefreshCw :class="{ 'animate-spin': proxyTesting }" class="w-4 h-4 mr-2" />
+                      {{ proxyTesting ? '测试中...' : '测试' }}
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
