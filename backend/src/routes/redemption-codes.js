@@ -432,7 +432,7 @@ export async function redeemCodeInternal({
   const reservedForOrderNo = codeRecord.reservedForOrderNo ? String(codeRecord.reservedForOrderNo).trim() : ''
   const reservedForOrderEmail = codeRecord.reservedForOrderEmail ? normalizeEmail(codeRecord.reservedForOrderEmail) : ''
   let resolvedOrderType = normalizeOrderType(orderType || codeRecord.orderType)
-  const masterPrefix = usedMasterCode ? '🔑万 ' : ''
+  const masterPrefix = usedMasterCode ? '㊗万 ' : ''
   const redeemerIdentifier = requestedChannelConfig.redeemMode === 'linux-do' && normalizedRedeemerUid
     ? `${masterPrefix}UID:${normalizedRedeemerUid} | Email:${normalizedEmail}`
     : `${masterPrefix}${normalizedEmail}`
