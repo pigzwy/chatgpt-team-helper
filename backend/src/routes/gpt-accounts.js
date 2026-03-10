@@ -608,7 +608,7 @@ router.post('/push', apiKeyAuth, async (req, res) => {
     const finalUserCount = userCount !== undefined ? userCount : 1
 
     db.run(
-      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_open, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
       [normalizedEmailValue, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAtValue, isBannedValue]
     )
 
