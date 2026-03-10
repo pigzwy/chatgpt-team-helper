@@ -352,6 +352,7 @@ export async function redeemCodeInternal({
 
   const db = await getDatabase()
   let resolvedCode = inputCode
+  let usedMasterCode = false
 
   // 提前解析渠道信息，万能码查询需要
   const requestedChannel = normalizeChannel(channel, 'common')
@@ -387,6 +388,7 @@ export async function redeemCodeInternal({
     }
 
     resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
+    usedMasterCode = true
   } else if (!skipCodeFormatValidation && !CODE_REGEX.test(inputCode)) {
     throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
   }
@@ -430,9 +432,10 @@ export async function redeemCodeInternal({
   const reservedForOrderNo = codeRecord.reservedForOrderNo ? String(codeRecord.reservedForOrderNo).trim() : ''
   const reservedForOrderEmail = codeRecord.reservedForOrderEmail ? normalizeEmail(codeRecord.reservedForOrderEmail) : ''
   let resolvedOrderType = normalizeOrderType(orderType || codeRecord.orderType)
+  const masterPrefix = usedMasterCode ? '🔑万 ' : ''
   const redeemerIdentifier = requestedChannelConfig.redeemMode === 'linux-do' && normalizedRedeemerUid
-    ? `UID:${normalizedRedeemerUid} | Email:${normalizedEmail}`
-    : normalizedEmail
+    ? `${masterPrefix}UID:${normalizedRedeemerUid} | Email:${normalizedEmail}`
+    : `${masterPrefix}${normalizedEmail}`
 
   if (isRedeemed) {
     throw new RedemptionError(400, '该兑换码已被使用')
