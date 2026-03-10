@@ -756,7 +756,7 @@ export async function redeemCodeInternal({
     },
     metadata: {
       codeId,
-      code: sanitizedCode,
+      code: resolvedCode,
       requestedChannel,
       accountEmail,
       accountId
