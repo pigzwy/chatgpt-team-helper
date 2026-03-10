@@ -725,7 +725,7 @@ const saveProxySettings = async () => {
     .filter(Boolean)
 
   // 验证代理格式
-  const proxyRegex = /^(https?|socks[45]?):\/\/[^:]+:\d+$/
+  const proxyRegex = /^(https?|socks[45]?):\/\/([^@]+@)?[^:/@]+:\d+$/
   for (const proxy of proxies) {
     if (!proxyRegex.test(proxy)) {
       proxyError.value = `代理地址格式无效: ${proxy}`

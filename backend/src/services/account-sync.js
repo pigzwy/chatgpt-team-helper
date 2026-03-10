@@ -1,6 +1,6 @@
 import { getDatabase, saveDatabase } from '../database/init.js'
 import axios from 'axios'
-import { loadProxyList, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
+import { loadProxyList, loadProxyListAsync, getProxyMode, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
 
 export class AccountSyncError extends Error {
   constructor(message, status = 500) {
@@ -13,13 +13,13 @@ export class AccountSyncError extends Error {
 const DEFAULT_PROXY_CACHE_TTL_MS = 60_000
 let defaultProxyCache = { loadedAt: 0, proxies: [] }
 
-const getDefaultProxyList = () => {
+const getDefaultProxyList = async () => {
   const now = Date.now()
   if (defaultProxyCache.loadedAt && (now - defaultProxyCache.loadedAt) < DEFAULT_PROXY_CACHE_TTL_MS) {
     return defaultProxyCache.proxies
   }
 
-  const proxies = loadProxyList()
+  const proxies = await loadProxyListAsync()
   defaultProxyCache = { loadedAt: now, proxies }
   return proxies
 }
@@ -48,14 +48,31 @@ const pickProxyFromEnv = () => {
   return null
 }
 
-const resolveRequestProxy = (proxy, { key, attempt } = {}) => {
+const resolveRequestProxy = async (proxy, { key, attempt } = {}) => {
   if (proxy === false) return false
 
   const rawString = typeof proxy === 'string' ? String(proxy).trim() : ''
   if (rawString) return rawString
   if (proxy && typeof proxy === 'object') return proxy
 
-  const entry = pickProxyByHash(getDefaultProxyList(), key, { attempt }) || pickProxyFromEnv()
+  const proxyList = await getDefaultProxyList()
+  const mode = await getProxyMode()
+
+  let entry = null
+  if (proxyList.length > 0) {
+    if (mode === 'single') {
+      // single 模式：始终使用第一个代理
+      entry = proxyList[0]
+    } else {
+      // pool 模式：基于 key 哈希分散
+      entry = pickProxyByHash(proxyList, key, { attempt })
+    }
+  }
+
+  if (!entry) {
+    entry = pickProxyFromEnv()
+  }
+
   return entry ? entry.url : null
 }
 
@@ -98,8 +115,8 @@ async function fetchAccountById(db, accountId) {
 }
 
 export async function fetchAllAccounts() {
-	  const db = await getDatabase()
-	  const result = db.exec(`
+  const db = await getDatabase()
+  const result = db.exec(`
 	    SELECT id, email, token, refresh_token, user_count, invite_count, chatgpt_account_id, oai_device_id, expire_at, is_open,
 	           COALESCE(is_banned, 0) AS is_banned,
 	           created_at, updated_at
@@ -140,9 +157,9 @@ const normalizeProxyConfig = (proxy) => {
 
     const auth = proxy.auth && typeof proxy.auth === 'object'
       ? {
-          username: proxy.auth.username ? String(proxy.auth.username) : '',
-          password: proxy.auth.password ? String(proxy.auth.password) : ''
-        }
+        username: proxy.auth.username ? String(proxy.auth.username) : '',
+        password: proxy.auth.password ? String(proxy.auth.password) : ''
+      }
       : undefined
 
     return {
@@ -180,9 +197,9 @@ const buildProxyUrlFromConfig = (proxyConfig) => {
 
   const auth = proxyConfig.auth && typeof proxyConfig.auth === 'object'
     ? {
-        username: proxyConfig.auth.username ? String(proxyConfig.auth.username) : '',
-        password: proxyConfig.auth.password ? String(proxyConfig.auth.password) : ''
-      }
+      username: proxyConfig.auth.username ? String(proxyConfig.auth.username) : '',
+      password: proxyConfig.auth.password ? String(proxyConfig.auth.password) : ''
+    }
     : null
 
   const authPart = auth && auth.username
@@ -232,7 +249,7 @@ async function getSocksAgent(proxyUrl, proxyConfigForLog) {
 
 async function requestChatgptText(apiUrl, { method, headers, data, proxy } = {}, logContext = {}) {
   const proxyKey = logContext?.accountId ?? logContext?.chatgptAccountId ?? ''
-  const resolvedProxy = resolveRequestProxy(proxy, { key: proxyKey })
+  const resolvedProxy = await resolveRequestProxy(proxy, { key: proxyKey })
   const rawProxyUrl = typeof resolvedProxy === 'string' ? String(resolvedProxy).trim() : ''
   const proxyConfig = normalizeProxyConfig(resolvedProxy)
   const socksProxyUrl = proxyConfig && isSocksProxyConfig(proxyConfig)
@@ -339,20 +356,20 @@ export async function fetchOpenAiAccountInfo(token, proxy = null) {
     throw new AccountSyncError('未找到关联的 ChatGPT 账号', 404)
   }
 
-	  // Only keep team accounts (for workspace invite/admin operations).
-	  return accountIds
-	    .map(id => {
-	      const acc = accountsMap[id]
-	      return {
-	        accountId: id,
-	        name: acc?.account?.name || 'Unnamed Team',
-	        planType: acc?.account?.plan_type || null,
-	        expiresAt: acc?.entitlement?.expires_at || null,
-	        hasActiveSubscription: !!acc?.entitlement?.has_active_subscription,
-	        isDemoted: false
-	      }
-	    })
-	    .filter(acc => acc.planType === 'team')
+  // Only keep team accounts (for workspace invite/admin operations).
+  return accountIds
+    .map(id => {
+      const acc = accountsMap[id]
+      return {
+        accountId: id,
+        name: acc?.account?.name || 'Unnamed Team',
+        planType: acc?.account?.plan_type || null,
+        expiresAt: acc?.entitlement?.expires_at || null,
+        hasActiveSubscription: !!acc?.entitlement?.has_active_subscription,
+        isDemoted: false
+      }
+    })
+    .filter(acc => acc.planType === 'team')
 }
 
 const throwChatgptApiStatusError = async ({ status, errorText, logContext, label }) => {

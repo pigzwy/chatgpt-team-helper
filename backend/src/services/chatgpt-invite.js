@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { formatProxyForLog, loadProxyList, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
+import { formatProxyForLog, loadProxyListAsync, getProxyMode, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
 
 const OAI_CLIENT_VERSION = 'prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72'
 const DEFAULT_TIMEOUT_MS = 60000
@@ -78,12 +78,16 @@ async function getSocksAgent(proxyUrl) {
   return agent
 }
 
-const loadInviteProxyList = () => {
-  return loadProxyList()
+const loadInviteProxyList = async () => {
+  return loadProxyListAsync()
 }
 
-const pickProxySequence = (proxies = [], key) => {
+const pickProxySequence = (proxies = [], key, mode = 'pool') => {
   if (!proxies.length) return () => null
+  if (mode === 'single') {
+    // single 模式：始终返回第一个
+    return () => proxies[0] || null
+  }
   return (attemptIndex) => pickProxyByHash(proxies, key, { attempt: attemptIndex }) || null
 }
 
@@ -104,9 +108,10 @@ export async function inviteUserToChatGPTTeam(email, accountData, options = {}) 
   const { token, chatgpt_account_id: chatgptAccountId, oai_device_id: oaiDeviceId } = accountData || {}
 
   const proxyOverrides = options.proxy ? [buildProxyConfigFromUrl(options.proxy)].filter(Boolean) : []
-  const proxies = proxyOverrides.length ? proxyOverrides : loadInviteProxyList()
+  const proxies = proxyOverrides.length ? proxyOverrides : await loadInviteProxyList()
   const proxyKey = options.proxyKey ?? chatgptAccountId ?? ''
-  const pickProxy = pickProxySequence(proxies, proxyKey)
+  const mode = await getProxyMode()
+  const pickProxy = pickProxySequence(proxies, proxyKey, mode)
 
   if (!token || !chatgptAccountId) {
     console.error('账号缺少必要的认证信息：token 或 chatgptAccountId')

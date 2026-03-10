@@ -122,8 +122,8 @@ export async function updateProxySettings({ proxies, mode } = {}) {
 export function isValidProxyUrl(proxy) {
   if (!proxy) return false
 
-  // 支持 http://, https://, socks://, socks5://
-  const proxyRegex = /^(https?|socks[45]?):\/\/[^:]+:\d+$/
+  // 支持 http://, https://, socks://, socks5://, 可选认证 user:pass@
+  const proxyRegex = /^(https?|socks[45]?):\/\/([^@]+@)?[^:/@]+:\d+$/
   return proxyRegex.test(proxy)
 }
 

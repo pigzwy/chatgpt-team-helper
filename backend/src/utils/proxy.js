@@ -1,4 +1,5 @@
 import fs from 'fs'
+import { getDatabase } from '../database/init.js'
 
 function splitList(value) {
   const raw = String(value || '').trim()
@@ -39,9 +40,9 @@ export function parseProxyConfig(proxyUrl) {
 
     const auth = parsed.username
       ? {
-          username: decodeURIComponent(parsed.username),
-          password: decodeURIComponent(parsed.password || '')
-        }
+        username: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password || '')
+      }
       : undefined
 
     return {
@@ -136,4 +137,64 @@ export function pickProxyByHash(proxies = [], key, { attempt = 1 } = {}) {
   const base = fnv1a32(normalizedKey)
   const index = (base + attemptOffset) % list.length
   return list[index] || null
+}
+
+/**
+ * 异步加载代理列表：合并 env + DB 来源，去重
+ * @param {Object} [options]
+ * @param {string} [options.urlsEnvKey]
+ * @param {string} [options.fileEnvKey]
+ * @returns {Promise<Array<{url: string, config: object}>>}
+ */
+export async function loadProxyListAsync(options = {}) {
+  // 1. 先从 env 加载（原有逻辑）
+  const envProxies = loadProxyList(options)
+  const seen = new Set(envProxies.map(p => p.url))
+
+  // 2. 再从 DB 加载页面配置的代理
+  try {
+    const db = await getDatabase()
+    const result = db.exec(
+      "SELECT config_value FROM system_config WHERE config_key = 'proxy_list' LIMIT 1"
+    )
+    const raw = result[0]?.values?.[0]?.[0] || ''
+    if (raw) {
+      const lines = String(raw)
+        .split(/[\r\n]+/)
+        .map(line => line.trim())
+        .filter(Boolean)
+
+      for (const line of lines) {
+        if (seen.has(line)) continue
+        seen.add(line)
+        const config = parseProxyConfig(line)
+        if (!config) {
+          console.warn('[ProxyList] invalid DB proxy url ignored', { proxy: formatProxyForLog(line) })
+          continue
+        }
+        envProxies.push({ url: line, config })
+      }
+    }
+  } catch (error) {
+    console.warn('[ProxyList] failed to load DB proxy settings', { message: error?.message || String(error) })
+  }
+
+  return envProxies
+}
+
+/**
+ * 从 DB 读取代理模式
+ * @returns {Promise<'single' | 'pool'>}
+ */
+export async function getProxyMode() {
+  try {
+    const db = await getDatabase()
+    const result = db.exec(
+      "SELECT config_value FROM system_config WHERE config_key = 'proxy_mode' LIMIT 1"
+    )
+    const mode = result[0]?.values?.[0]?.[0] || 'single'
+    return mode === 'pool' ? 'pool' : 'single'
+  } catch {
+    return 'single'
+  }
 }

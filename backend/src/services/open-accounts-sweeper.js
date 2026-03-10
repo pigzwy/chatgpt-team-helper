@@ -1,6 +1,6 @@
 import { getDatabase, saveDatabase } from '../database/init.js'
 import { withLocks } from '../utils/locks.js'
-import { formatProxyForLog, loadProxyList, pickProxyByHash } from '../utils/proxy.js'
+import { formatProxyForLog, loadProxyListAsync, getProxyMode, pickProxyByHash } from '../utils/proxy.js'
 import { AccountSyncError, deleteAccountUser, fetchAccountUsersList, syncAccountInviteCount, syncAccountUserCount } from './account-sync.js'
 import { sendOpenAccountsSweeperReportEmail } from './email-service.js'
 import { getFeatureFlags, isFeatureEnabled } from '../utils/feature-flags.js'
@@ -81,10 +81,10 @@ const enforceAccountCapacity = async (accountId, { maxJoinedCount, proxy } = {})
     try {
       await deleteAccountUser(accountId, user.id, { userListParams: { offset: 0, limit: 1, query: '' }, proxy })
       const email = String(user.email || '').trim().toLowerCase()
-	      if (email) {
-	        const db = await getDatabase()
-	        db.run(
-	          `
+      if (email) {
+        const db = await getDatabase()
+        db.run(
+          `
 	            UPDATE linuxdo_users
 	            SET current_open_account_id = NULL,
 	                current_open_account_email = NULL,
@@ -92,10 +92,10 @@ const enforceAccountCapacity = async (accountId, { maxJoinedCount, proxy } = {})
 	            WHERE current_open_account_id = ?
 	              AND (lower(email) = ? OR lower(current_open_account_email) = ?)
 	          `,
-	          [accountId, email, email]
-	        )
-	        saveDatabase()
-	      }
+          [accountId, email, email]
+        )
+        saveDatabase()
+      }
       kicked += 1
     } catch (error) {
       const status = error instanceof AccountSyncError ? error.status : undefined
@@ -114,7 +114,7 @@ const enforceAccountCapacity = async (accountId, { maxJoinedCount, proxy } = {})
 export const startOpenAccountsOvercapacitySweeper = () => {
   if (!isEnabled()) {
     console.log('[OpenAccountsSweeper] disabled')
-    return () => {}
+    return () => { }
   }
 
   let running = false
@@ -127,13 +127,13 @@ export const startOpenAccountsOvercapacitySweeper = () => {
       if (!isFeatureEnabled(features, 'openAccounts')) return
 
       const db = await getDatabase()
-	      const windowDays = createdWithinDays()
-	      const result = windowDays > 0
-	        ? db.exec(
-	            `SELECT id, email FROM gpt_accounts WHERE is_open = 1 AND COALESCE(is_banned, 0) = 0 AND created_at >= DATETIME('now', 'localtime', ?)`,
-	            [`-${windowDays} days`]
-	          )
-	        : db.exec('SELECT id, email FROM gpt_accounts WHERE is_open = 1 AND COALESCE(is_banned, 0) = 0')
+      const windowDays = createdWithinDays()
+      const result = windowDays > 0
+        ? db.exec(
+          `SELECT id, email FROM gpt_accounts WHERE is_open = 1 AND COALESCE(is_banned, 0) = 0 AND created_at >= DATETIME('now', 'localtime', ?)`,
+          [`-${windowDays} days`]
+        )
+        : db.exec('SELECT id, email FROM gpt_accounts WHERE is_open = 1 AND COALESCE(is_banned, 0) = 0')
       const accountRows = (result[0]?.values || [])
         .map(row => {
           const id = Number(row[0])
@@ -145,21 +145,24 @@ export const startOpenAccountsOvercapacitySweeper = () => {
       if (accountRows.length === 0) return
 
       const max = maxJoined()
-	      const workerCount = Math.min(concurrency(), accountRows.length)
-	      const queue = [...accountRows]
-	      const proxies = loadProxyList()
-	      const results = []
-	      const failures = []
-	      let totalKicked = 0
+      const workerCount = Math.min(concurrency(), accountRows.length)
+      const queue = [...accountRows]
+      const proxies = await loadProxyListAsync()
+      const proxyMode = await getProxyMode()
+      const results = []
+      const failures = []
+      let totalKicked = 0
 
       const worker = async () => {
         while (queue.length > 0) {
-	          const item = queue.shift()
-	          if (!item) return
-	          const { id, emailPrefix } = item
-	          const proxyEntry = pickProxyByHash(proxies, id)
-	          const proxy = proxyEntry?.url || null
-	          const proxyLabel = proxyEntry ? formatProxyForLog(proxyEntry.url) : null
+          const item = queue.shift()
+          if (!item) return
+          const { id, emailPrefix } = item
+          const proxyEntry = proxyMode === 'single'
+            ? (proxies[0] || null)
+            : pickProxyByHash(proxies, id)
+          const proxy = proxyEntry?.url || null
+          const proxyLabel = proxyEntry ? formatProxyForLog(proxyEntry.url) : null
           await withLocks([`acct:${id}`], async () => {
             try {
               const outcome = await enforceAccountCapacity(id, { maxJoinedCount: max, proxy })
