@@ -32,7 +32,7 @@ export async function updateMasterRedemptionSettings({ code } = {}) {
   const db = await getDatabase()
 
   if (code !== undefined && code !== null) {
-    const normalizedCode = String(code).trim()
+    const normalizedCode = String(code).trim().toUpperCase()
     const existing = db.exec(
       'SELECT id FROM system_config WHERE config_key = ? LIMIT 1',
       ['master_redemption_code']

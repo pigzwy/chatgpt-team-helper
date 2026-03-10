@@ -353,19 +353,34 @@ export async function redeemCodeInternal({
   const db = await getDatabase()
   let resolvedCode = inputCode
 
+  // 提前解析渠道信息，万能码查询需要
+  const requestedChannel = normalizeChannel(channel, 'common')
+  const { byKey: channelsByKey } = await getChannels(db)
+  const requestedChannelConfig = channelsByKey.get(requestedChannel) || null
+
   // 万能兑换码逻辑：如果输入的是万能码，从码池自动分配一个未使用的兑换码
   const masterSettings = await getMasterRedemptionSettings()
   const masterCode = masterSettings.code ? String(masterSettings.code).trim().toUpperCase() : ''
   if (masterCode && inputCode === masterCode) {
+    // 构建渠道过滤条件：优先取请求渠道的码，允许 fallback 时也取 common 渠道的码
+    const channelFilter = allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback
+      ? `AND (LOWER(TRIM(channel)) = ? OR LOWER(TRIM(channel)) = 'common' OR channel IS NULL OR TRIM(channel) = '')`
+      : `AND (LOWER(TRIM(channel)) = ? OR (? = 'common' AND (channel IS NULL OR TRIM(channel) = '')))`
+
+    const channelParams = allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback
+      ? [requestedChannel]
+      : [requestedChannel, requestedChannel]
+
     const poolResult = db.exec(`
       SELECT code FROM redemption_codes
       WHERE is_redeemed = 0
         AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
         AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
         AND (reserved_for_order_email IS NULL OR reserved_for_order_email = '')
+        ${channelFilter}
       ORDER BY created_at ASC
       LIMIT 1
-    `)
+    `, channelParams)
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
       throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
@@ -376,10 +391,7 @@ export async function redeemCodeInternal({
     throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
   }
 
-  const requestedChannel = normalizeChannel(channel, 'common')
   const normalizedRedeemerUid = redeemerUid != null ? String(redeemerUid).trim() : ''
-  const { byKey: channelsByKey } = await getChannels(db)
-  const requestedChannelConfig = channelsByKey.get(requestedChannel) || null
 
   if (!requestedChannelConfig) {
     throw new RedemptionError(400, '渠道不存在或已停用')
@@ -1439,68 +1451,68 @@ router.post('/recover', async (req, res) => {
         })
       }
 
-	      const firstCandidate = refundableCandidates[0]
-	      let targetCandidate = refundableCandidates.find(candidate => candidate.currentIsBanned) || null
-	      let processedReason = targetCandidate ? 'banned' : ''
+      const firstCandidate = refundableCandidates[0]
+      let targetCandidate = refundableCandidates.find(candidate => candidate.currentIsBanned) || null
+      let processedReason = targetCandidate ? 'banned' : ''
 
-	      const accessCache = new Map()
-	      let unknownSyncError = null
+      const accessCache = new Map()
+      let unknownSyncError = null
 
       if (!targetCandidate) {
         for (const candidate of refundableCandidates) {
-	          const accountId = candidate.currentAccountId
-	          if (!candidate.currentAccountEmail || !accountId) {
-	            targetCandidate = candidate
-	            processedReason = 'missing_account'
-	            break
-	          }
+          const accountId = candidate.currentAccountId
+          if (!candidate.currentAccountEmail || !accountId) {
+            targetCandidate = candidate
+            processedReason = 'missing_account'
+            break
+          }
 
-	          let cached = accessCache.get(accountId)
-	          if (!cached) {
-	            const globalCached = getAccountRecoveryAccessCache(accountId)
-	            if (globalCached) {
-	              cached = globalCached
-	              accessCache.set(accountId, globalCached)
-	            }
-	          }
-	          if (cached?.status === 'accessible') continue
-	          if (cached?.status === 'access_failure') {
-	            targetCandidate = candidate
-	            processedReason = 'access_failure'
-	            break
-	          }
-	          if (cached?.status === 'unknown') {
-	            if (!unknownSyncError) {
-	              unknownSyncError = { error: cached.error, statusCode: cached.statusCode, candidate }
-	            }
-	            continue
-	          }
+          let cached = accessCache.get(accountId)
+          if (!cached) {
+            const globalCached = getAccountRecoveryAccessCache(accountId)
+            if (globalCached) {
+              cached = globalCached
+              accessCache.set(accountId, globalCached)
+            }
+          }
+          if (cached?.status === 'accessible') continue
+          if (cached?.status === 'access_failure') {
+            targetCandidate = candidate
+            processedReason = 'access_failure'
+            break
+          }
+          if (cached?.status === 'unknown') {
+            if (!unknownSyncError) {
+              unknownSyncError = { error: cached.error, statusCode: cached.statusCode, candidate }
+            }
+            continue
+          }
 
-	          try {
-	            const usersData = await fetchAccountUsersList(accountId, {
-	              userListParams: { offset: 0, limit: 1, query: '' }
-	            })
-	            const userCount = typeof usersData?.total === 'number' ? usersData.total : null
-	            const entry = { status: 'accessible', userCount }
-	            accessCache.set(accountId, entry)
-	            setAccountRecoveryAccessCache(accountId, entry)
-	          } catch (error) {
-	            if (isAccountAccessFailure(error)) {
-	              const entry = { status: 'access_failure' }
-	              accessCache.set(accountId, { ...entry, error })
-	              setAccountRecoveryAccessCache(accountId, entry)
-	              targetCandidate = candidate
-	              processedReason = 'access_failure'
-	              break
-	            }
-	            const statusCode = Number(error?.status ?? error?.statusCode) || 503
-	            accessCache.set(accountId, { status: 'unknown', error, statusCode })
-	            if (!unknownSyncError) {
-	              unknownSyncError = { error, statusCode, candidate }
-	            }
-	          }
-	        }
-	      }
+          try {
+            const usersData = await fetchAccountUsersList(accountId, {
+              userListParams: { offset: 0, limit: 1, query: '' }
+            })
+            const userCount = typeof usersData?.total === 'number' ? usersData.total : null
+            const entry = { status: 'accessible', userCount }
+            accessCache.set(accountId, entry)
+            setAccountRecoveryAccessCache(accountId, entry)
+          } catch (error) {
+            if (isAccountAccessFailure(error)) {
+              const entry = { status: 'access_failure' }
+              accessCache.set(accountId, { ...entry, error })
+              setAccountRecoveryAccessCache(accountId, entry)
+              targetCandidate = candidate
+              processedReason = 'access_failure'
+              break
+            }
+            const statusCode = Number(error?.status ?? error?.statusCode) || 503
+            accessCache.set(accountId, { status: 'unknown', error, statusCode })
+            if (!unknownSyncError) {
+              unknownSyncError = { error, statusCode, candidate }
+            }
+          }
+        }
+      }
 
       if (!targetCandidate) {
         if (unknownSyncError) {
@@ -1839,7 +1851,7 @@ router.post('/xhs/search-order', requireFeatureEnabled('xhs'), async (req, res) 
     })
   } catch (error) {
     console.error('[XHS Search Sync] 请求处理失败:', error)
-    await recordXhsSyncResult({ success: false, error: error?.message || '同步失败' }).catch(() => {})
+    await recordXhsSyncResult({ success: false, error: error?.message || '同步失败' }).catch(() => { })
     res.status(500).json({ error: error?.message || '服务器错误，请稍后再试' })
   }
 })
@@ -1885,28 +1897,28 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
     }
 
     await withLocks([`xhs-redeem`, `xhs-order:${normalizedOrderNumber}`], async () => {
-	      const orderRecord = await getXhsOrderByNumber(normalizedOrderNumber)
-	      if (!orderRecord) {
-	        return res.status(404).json({ error: '未找到对应订单，请稍后再试' })
-	      }
+      const orderRecord = await getXhsOrderByNumber(normalizedOrderNumber)
+      if (!orderRecord) {
+        return res.status(404).json({ error: '未找到对应订单，请稍后再试' })
+      }
 
-	      if (orderRecord.isUsed) {
-	        return res.status(400).json({ error: '该订单已完成兑换' })
-	      }
+      if (orderRecord.isUsed) {
+        return res.status(400).json({ error: '该订单已完成兑换' })
+      }
 
-	      if (String(orderRecord.orderStatus || '').trim() === '已关闭') {
-	        return res.status(403).json({ error: '该订单已完成售后退款（已关闭），无法进行核销' })
-	      }
+      if (String(orderRecord.orderStatus || '').trim() === '已关闭') {
+        return res.status(403).json({ error: '该订单已完成售后退款（已关闭），无法进行核销' })
+      }
 
-	      const db = await getDatabase()
-        const { byKey: channelsByKey } = await getChannels(db)
-        const allowCommonFallback = Boolean(channelsByKey.get('xhs')?.allowCommonFallback)
-	      const now = new Date()
-	      const fallbackToYesterdayEnabled = !strictTodayEnabled && now.getHours() >= 0 && now.getHours() < 8
-        const minAccountExpireAt = formatExpireAtComparable(addDays(now, HISTORY_CODE_MIN_ACCOUNT_REMAINING_DAYS))
+      const db = await getDatabase()
+      const { byKey: channelsByKey } = await getChannels(db)
+      const allowCommonFallback = Boolean(channelsByKey.get('xhs')?.allowCommonFallback)
+      const now = new Date()
+      const fallbackToYesterdayEnabled = !strictTodayEnabled && now.getHours() >= 0 && now.getHours() < 8
+      const minAccountExpireAt = formatExpireAtComparable(addDays(now, HISTORY_CODE_MIN_ACCOUNT_REMAINING_DAYS))
 
-		      const availableCodeResult = db.exec(
-		        `
+      const availableCodeResult = db.exec(
+        `
 		          SELECT rc.id, rc.code, rc.created_at
 		          FROM redemption_codes rc
 		          WHERE lower(trim(rc.channel)) = 'xhs'
@@ -1927,13 +1939,13 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 		          ORDER BY rc.created_at ASC
 		          LIMIT 1
 	        `
-	      )
+      )
 
       let selectedCodeRow = availableCodeResult?.[0]?.values?.[0] || null
 
       if (!selectedCodeRow && fallbackToYesterdayEnabled) {
-		        const fallbackCodeResult = db.exec(
-		          `
+        const fallbackCodeResult = db.exec(
+          `
 		            SELECT rc.id, rc.code, rc.created_at
 		            FROM redemption_codes rc
                 JOIN gpt_accounts ga
@@ -1950,10 +1962,10 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 		            ORDER BY rc.created_at ASC
 	            LIMIT 1
 	          `,
-            [minAccountExpireAt]
-	        )
-	        selectedCodeRow = fallbackCodeResult?.[0]?.values?.[0] || null
-	      }
+          [minAccountExpireAt]
+        )
+        selectedCodeRow = fallbackCodeResult?.[0]?.values?.[0] || null
+      }
 
       if (!selectedCodeRow && !strictTodayEnabled) {
         const anyDateCodeResult = db.exec(
@@ -1978,10 +1990,10 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
         selectedCodeRow = anyDateCodeResult?.[0]?.values?.[0] || null
       }
 
-        if (!selectedCodeRow && allowCommonFallback) {
-          const commonFallback = await withLocks(['redemption-codes:pool:common'], async () => {
-            const commonCodeResult = db.exec(
-              `
+      if (!selectedCodeRow && allowCommonFallback) {
+        const commonFallback = await withLocks(['redemption-codes:pool:common'], async () => {
+          const commonCodeResult = db.exec(
+            `
                 SELECT rc.id, rc.code, rc.created_at
                 FROM redemption_codes rc
                 WHERE COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = 'common'
@@ -2002,12 +2014,12 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 	                ORDER BY rc.created_at ASC
                 LIMIT 1
               `
-            )
-            let commonCodeRow = commonCodeResult?.[0]?.values?.[0] || null
+          )
+          let commonCodeRow = commonCodeResult?.[0]?.values?.[0] || null
 
-            if (!commonCodeRow && fallbackToYesterdayEnabled) {
-              const commonYesterdayResult = db.exec(
-                `
+          if (!commonCodeRow && fallbackToYesterdayEnabled) {
+            const commonYesterdayResult = db.exec(
+              `
                   SELECT rc.id, rc.code, rc.created_at
                   FROM redemption_codes rc
                   JOIN gpt_accounts ga
@@ -2024,14 +2036,14 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 	                  ORDER BY rc.created_at ASC
                   LIMIT 1
                 `,
-                [minAccountExpireAt]
-              )
-              commonCodeRow = commonYesterdayResult?.[0]?.values?.[0] || null
-            }
+              [minAccountExpireAt]
+            )
+            commonCodeRow = commonYesterdayResult?.[0]?.values?.[0] || null
+          }
 
-            if (!commonCodeRow && !strictTodayEnabled) {
-              const commonAnyDateResult = db.exec(
-                `
+          if (!commonCodeRow && !strictTodayEnabled) {
+            const commonAnyDateResult = db.exec(
+              `
                   SELECT rc.id, rc.code, rc.created_at
                   FROM redemption_codes rc
                   JOIN gpt_accounts ga
@@ -2047,48 +2059,48 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
                     ORDER BY rc.created_at ASC
                   LIMIT 1
                 `,
-                [minAccountExpireAt]
-              )
-              commonCodeRow = commonAnyDateResult?.[0]?.values?.[0] || null
-            }
+              [minAccountExpireAt]
+            )
+            commonCodeRow = commonAnyDateResult?.[0]?.values?.[0] || null
+          }
 
-            if (!commonCodeRow) return null
+          if (!commonCodeRow) return null
 
-            const selectedCodeId = commonCodeRow[0]
-            const selectedCode = commonCodeRow[1]
+          const selectedCodeId = commonCodeRow[0]
+          const selectedCode = commonCodeRow[1]
 
-            const redemptionResult = await redeemCodeInternal({
-              code: selectedCode,
-              email: normalizedEmail,
-              channel: 'xhs',
-              skipCodeFormatValidation: true,
-              allowCommonChannelFallback: true
-            })
-
-            await markXhsOrderRedeemed(orderRecord.id, selectedCodeId, selectedCode, normalizedEmail)
-
-            return { selectedCodeId, selectedCode, redemptionResult }
+          const redemptionResult = await redeemCodeInternal({
+            code: selectedCode,
+            email: normalizedEmail,
+            channel: 'xhs',
+            skipCodeFormatValidation: true,
+            allowCommonChannelFallback: true
           })
 
-          if (commonFallback) {
-            return res.json({
-              message: '兑换成功',
-              data: commonFallback.redemptionResult.data,
-              order: {
-                ...orderRecord,
-                status: 'redeemed',
-                isUsed: true,
-                userEmail: normalizedEmail,
-                assignedCodeId: commonFallback.selectedCodeId,
-                assignedCode: commonFallback.selectedCode,
-              }
-            })
-          }
+          await markXhsOrderRedeemed(orderRecord.id, selectedCodeId, selectedCode, normalizedEmail)
+
+          return { selectedCodeId, selectedCode, redemptionResult }
+        })
+
+        if (commonFallback) {
+          return res.json({
+            message: '兑换成功',
+            data: commonFallback.redemptionResult.data,
+            order: {
+              ...orderRecord,
+              status: 'redeemed',
+              isUsed: true,
+              userEmail: normalizedEmail,
+              assignedCodeId: commonFallback.selectedCodeId,
+              assignedCode: commonFallback.selectedCode,
+            }
+          })
         }
+      }
 
       if (!selectedCodeRow) {
-	        const statsResult = db.exec(
-	          `
+        const statsResult = db.exec(
+          `
 	            SELECT
 	              COUNT(*) as all_total,
 	              SUM(CASE WHEN is_redeemed = 0 THEN 1 ELSE 0 END) as all_unused,
@@ -2106,18 +2118,18 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 		                )
 		              )
 		          `
-		        )
+        )
         const statsRow = statsResult?.[0]?.values?.[0] || []
         const allTotal = Number(statsRow[0] || 0)
         const todayTotal = Number(statsRow[2] || 0)
         const todayUnused = Number(statsRow[3] || 0)
 
-	        const errorCode = allTotal === 0
-	          ? 'xhs_codes_not_configured'
-	          : (todayTotal <= 0 ? 'xhs_no_today_codes' : (todayUnused <= 0 ? 'xhs_today_codes_exhausted' : 'xhs_codes_unavailable'))
+        const errorCode = allTotal === 0
+          ? 'xhs_codes_not_configured'
+          : (todayTotal <= 0 ? 'xhs_no_today_codes' : (todayUnused <= 0 ? 'xhs_today_codes_exhausted' : 'xhs_codes_unavailable'))
 
-	        return res.status(503).json({ error: OUT_OF_STOCK_MESSAGE, errorCode })
-	      }
+        return res.status(503).json({ error: OUT_OF_STOCK_MESSAGE, errorCode })
+      }
 
       const selectedCodeId = selectedCodeRow[0]
       const selectedCode = selectedCodeRow[1]
@@ -2214,7 +2226,7 @@ router.post('/xianyu/search-order', requireFeatureEnabled('xianyu'), async (req,
     })
   } catch (error) {
     console.error('[Xianyu Search Sync] 请求处理失败:', error)
-    await recordXianyuSyncResult({ success: false, error: error?.message || '同步失败' }).catch(() => {})
+    await recordXianyuSyncResult({ success: false, error: error?.message || '同步失败' }).catch(() => { })
     res.status(500).json({ error: error?.message || '服务器错误，请稍后再试' })
   }
 })
@@ -2273,16 +2285,16 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
         return res.status(403).json({ error: '该订单已关闭，无法进行核销' })
       }
 
-	      const db = await getDatabase()
-        const { byKey: channelsByKey } = await getChannels(db)
-        const allowCommonFallback = Boolean(channelsByKey.get('xianyu')?.allowCommonFallback)
-	      const now = new Date()
-	      const fallbackToYesterdayEnabled = !strictTodayEnabled && now.getHours() >= 0 && now.getHours() < 8
-        const minAccountExpireAt = formatExpireAtComparable(addDays(now, HISTORY_CODE_MIN_ACCOUNT_REMAINING_DAYS))
-	      const resolvedOrderType = resolveXianyuOrderTypeFromActualPaid(orderRecord.actualPaid)
+      const db = await getDatabase()
+      const { byKey: channelsByKey } = await getChannels(db)
+      const allowCommonFallback = Boolean(channelsByKey.get('xianyu')?.allowCommonFallback)
+      const now = new Date()
+      const fallbackToYesterdayEnabled = !strictTodayEnabled && now.getHours() >= 0 && now.getHours() < 8
+      const minAccountExpireAt = formatExpireAtComparable(addDays(now, HISTORY_CODE_MIN_ACCOUNT_REMAINING_DAYS))
+      const resolvedOrderType = resolveXianyuOrderTypeFromActualPaid(orderRecord.actualPaid)
 
-		      const availableCodeResult = db.exec(
-		        `
+      const availableCodeResult = db.exec(
+        `
 		          SELECT rc.id, rc.code, rc.created_at
 	          FROM redemption_codes rc
 	          WHERE lower(trim(rc.channel)) = 'xianyu'
@@ -2307,9 +2319,9 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 
       let selectedCodeRow = availableCodeResult?.[0]?.values?.[0] || null
 
-	      if (!selectedCodeRow && fallbackToYesterdayEnabled) {
-	        const fallbackCodeResult = db.exec(
-	          `
+      if (!selectedCodeRow && fallbackToYesterdayEnabled) {
+        const fallbackCodeResult = db.exec(
+          `
 	            SELECT rc.id, rc.code, rc.created_at
 	            FROM redemption_codes rc
               JOIN gpt_accounts ga
@@ -2328,8 +2340,8 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
           `,
           [minAccountExpireAt]
         )
-	        selectedCodeRow = fallbackCodeResult?.[0]?.values?.[0] || null
-	      }
+        selectedCodeRow = fallbackCodeResult?.[0]?.values?.[0] || null
+      }
 
       if (!selectedCodeRow && !strictTodayEnabled) {
         const anyDateCodeResult = db.exec(
@@ -2354,10 +2366,10 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
         selectedCodeRow = anyDateCodeResult?.[0]?.values?.[0] || null
       }
 
-        if (!selectedCodeRow && allowCommonFallback) {
-          const commonFallback = await withLocks(['redemption-codes:pool:common'], async () => {
-            const commonCodeResult = db.exec(
-              `
+      if (!selectedCodeRow && allowCommonFallback) {
+        const commonFallback = await withLocks(['redemption-codes:pool:common'], async () => {
+          const commonCodeResult = db.exec(
+            `
                 SELECT rc.id, rc.code, rc.created_at
                 FROM redemption_codes rc
                 WHERE COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = 'common'
@@ -2378,12 +2390,12 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 	                ORDER BY rc.created_at ASC
                 LIMIT 1
               `
-            )
-            let commonCodeRow = commonCodeResult?.[0]?.values?.[0] || null
+          )
+          let commonCodeRow = commonCodeResult?.[0]?.values?.[0] || null
 
-            if (!commonCodeRow && fallbackToYesterdayEnabled) {
-              const commonYesterdayResult = db.exec(
-                `
+          if (!commonCodeRow && fallbackToYesterdayEnabled) {
+            const commonYesterdayResult = db.exec(
+              `
                   SELECT rc.id, rc.code, rc.created_at
                   FROM redemption_codes rc
                   JOIN gpt_accounts ga
@@ -2400,14 +2412,14 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 	                  ORDER BY rc.created_at ASC
                   LIMIT 1
                 `,
-                [minAccountExpireAt]
-              )
-              commonCodeRow = commonYesterdayResult?.[0]?.values?.[0] || null
-            }
+              [minAccountExpireAt]
+            )
+            commonCodeRow = commonYesterdayResult?.[0]?.values?.[0] || null
+          }
 
-            if (!commonCodeRow && !strictTodayEnabled) {
-              const commonAnyDateResult = db.exec(
-                `
+          if (!commonCodeRow && !strictTodayEnabled) {
+            const commonAnyDateResult = db.exec(
+              `
                   SELECT rc.id, rc.code, rc.created_at
                   FROM redemption_codes rc
                   JOIN gpt_accounts ga
@@ -2423,49 +2435,49 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
                     ORDER BY rc.created_at ASC
                   LIMIT 1
                 `,
-                [minAccountExpireAt]
-              )
-              commonCodeRow = commonAnyDateResult?.[0]?.values?.[0] || null
-            }
+              [minAccountExpireAt]
+            )
+            commonCodeRow = commonAnyDateResult?.[0]?.values?.[0] || null
+          }
 
-            if (!commonCodeRow) return null
+          if (!commonCodeRow) return null
 
-            const selectedCodeId = commonCodeRow[0]
-            const selectedCode = commonCodeRow[1]
+          const selectedCodeId = commonCodeRow[0]
+          const selectedCode = commonCodeRow[1]
 
-            const redemptionResult = await redeemCodeInternal({
-              code: selectedCode,
-              email: normalizedEmail,
-              channel: 'xianyu',
-              orderType: resolvedOrderType,
-              skipCodeFormatValidation: true,
-              allowCommonChannelFallback: true
-            })
-
-            await markXianyuOrderRedeemed(orderRecord.id, selectedCodeId, selectedCode, normalizedEmail)
-
-            return { selectedCodeId, selectedCode, redemptionResult }
+          const redemptionResult = await redeemCodeInternal({
+            code: selectedCode,
+            email: normalizedEmail,
+            channel: 'xianyu',
+            orderType: resolvedOrderType,
+            skipCodeFormatValidation: true,
+            allowCommonChannelFallback: true
           })
 
-          if (commonFallback) {
-            return res.json({
-              message: '兑换成功',
-              data: commonFallback.redemptionResult.data,
-              order: {
-                ...orderRecord,
-                status: 'redeemed',
-                isUsed: true,
-                userEmail: normalizedEmail,
-                assignedCodeId: commonFallback.selectedCodeId,
-                assignedCode: commonFallback.selectedCode,
-              }
-            })
-          }
-        }
+          await markXianyuOrderRedeemed(orderRecord.id, selectedCodeId, selectedCode, normalizedEmail)
 
-	      if (!selectedCodeRow) {
-	        const statsResult = db.exec(
-	          `
+          return { selectedCodeId, selectedCode, redemptionResult }
+        })
+
+        if (commonFallback) {
+          return res.json({
+            message: '兑换成功',
+            data: commonFallback.redemptionResult.data,
+            order: {
+              ...orderRecord,
+              status: 'redeemed',
+              isUsed: true,
+              userEmail: normalizedEmail,
+              assignedCodeId: commonFallback.selectedCodeId,
+              assignedCode: commonFallback.selectedCode,
+            }
+          })
+        }
+      }
+
+      if (!selectedCodeRow) {
+        const statsResult = db.exec(
+          `
 	            SELECT
               COUNT(*) as all_total,
               SUM(CASE WHEN is_redeemed = 0 THEN 1 ELSE 0 END) as all_unused,
@@ -2483,30 +2495,30 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 	                )
 	              )
 	          `
-		        )
+        )
         const statsRow = statsResult?.[0]?.values?.[0] || []
         const allTotal = Number(statsRow[0] || 0)
         const todayTotal = Number(statsRow[2] || 0)
         const todayUnused = Number(statsRow[3] || 0)
 
-	        const errorCode = allTotal === 0
-	          ? 'xianyu_codes_not_configured'
-	          : (todayTotal <= 0 ? 'xianyu_no_today_codes' : (todayUnused <= 0 ? 'xianyu_today_codes_exhausted' : 'xianyu_codes_unavailable'))
+        const errorCode = allTotal === 0
+          ? 'xianyu_codes_not_configured'
+          : (todayTotal <= 0 ? 'xianyu_no_today_codes' : (todayUnused <= 0 ? 'xianyu_today_codes_exhausted' : 'xianyu_codes_unavailable'))
 
-	        return res.status(503).json({ error: OUT_OF_STOCK_MESSAGE, errorCode })
-	      }
+        return res.status(503).json({ error: OUT_OF_STOCK_MESSAGE, errorCode })
+      }
 
       const selectedCodeId = selectedCodeRow[0]
       const selectedCode = selectedCodeRow[1]
 
-	      const redemptionResult = await redeemCodeInternal({
-	        code: selectedCode,
-	        email: normalizedEmail,
-	        channel: 'xianyu',
-	        orderType: resolvedOrderType,
-	        skipCodeFormatValidation: true,
-          allowCommonChannelFallback: true
-	      })
+      const redemptionResult = await redeemCodeInternal({
+        code: selectedCode,
+        email: normalizedEmail,
+        channel: 'xianyu',
+        orderType: resolvedOrderType,
+        skipCodeFormatValidation: true,
+        allowCommonChannelFallback: true
+      })
 
       await markXianyuOrderRedeemed(orderRecord.id, selectedCodeId, selectedCode, normalizedEmail)
 
@@ -2553,17 +2565,17 @@ router.get('/artisan-flow/today', apiKeyAuth, async (req, res) => {
 
     const codes = result.length > 0
       ? result[0].values.map(row => ({
-          id: row[0],
-          code: row[1],
-          isRedeemed: row[2] === 1,
-          redeemedAt: row[3],
-          redeemedBy: row[4],
-          accountEmail: row[5],
-          channel: row[6],
-          channelName: row[7],
-          createdAt: row[8],
-          updatedAt: row[9]
-        }))
+        id: row[0],
+        code: row[1],
+        isRedeemed: row[2] === 1,
+        redeemedAt: row[3],
+        redeemedBy: row[4],
+        accountEmail: row[5],
+        channel: row[6],
+        channelName: row[7],
+        createdAt: row[8],
+        updatedAt: row[9]
+      }))
       : []
 
     // 获取当前本地日期

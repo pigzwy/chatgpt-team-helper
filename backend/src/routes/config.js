@@ -4,6 +4,7 @@ import { getFeatureFlags } from '../utils/feature-flags.js'
 import { getChannels } from '../utils/channels.js'
 import { authenticateToken } from '../middleware/auth.js'
 import { requireMenu } from '../middleware/rbac.js'
+import { getMasterRedemptionSettings, updateMasterRedemptionSettings } from '../utils/master-redemption-settings.js'
 
 const router = express.Router()
 
@@ -25,7 +26,7 @@ const getOpenAccountsMaintenanceMessage = () => {
 }
 
 const normalizeMasterRedemptionCode = (value) => {
-  const normalized = value == null ? '' : String(value).trim()
+  const normalized = value == null ? '' : String(value).trim().toUpperCase()
   if (normalized && normalized.length < 4) {
     const error = new Error('万能兑换码至少需要 4 个字符')
     error.status = 400
@@ -36,7 +37,6 @@ const normalizeMasterRedemptionCode = (value) => {
 
 router.get('/master-redemption', authenticateToken, requireMenu('system_settings'), async (req, res) => {
   try {
-    const { getMasterRedemptionSettings } = await import('../utils/master-redemption-settings.js')
     const settings = await getMasterRedemptionSettings()
     res.json({ code: settings.code || '' })
   } catch (error) {
@@ -91,7 +91,6 @@ router.patch('/master-redemption', authenticateToken, requireMenu('system_settin
     }
 
     const normalizedCode = normalizeMasterRedemptionCode(req.body?.code)
-    const { updateMasterRedemptionSettings } = await import('../utils/master-redemption-settings.js')
     await updateMasterRedemptionSettings({ code: normalizedCode })
     res.json({
       message: normalizedCode ? '万能兑换码已更新' : '万能兑换码已禁用',
