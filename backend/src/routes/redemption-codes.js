@@ -373,13 +373,18 @@ export async function redeemCodeInternal({
       : [requestedChannel, requestedChannel]
 
     const poolResult = db.exec(`
-      SELECT code FROM redemption_codes
-      WHERE is_redeemed = 0
-        AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
-        AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
-        AND (reserved_for_order_email IS NULL OR reserved_for_order_email = '')
+      SELECT rc.code FROM redemption_codes rc
+      JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
+      WHERE rc.is_redeemed = 0
+        AND (rc.reserved_for_uid IS NULL OR rc.reserved_for_uid = '')
+        AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
+        AND (rc.reserved_for_order_email IS NULL OR rc.reserved_for_order_email = '')
+        AND COALESCE(ga.is_banned, 0) = 0
+        AND COALESCE(ga.is_open, 0) = 1
+        AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
+        AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
         ${channelFilter}
-      ORDER BY created_at ASC
+      ORDER BY rc.created_at ASC
       LIMIT 1
     `, channelParams)
 
