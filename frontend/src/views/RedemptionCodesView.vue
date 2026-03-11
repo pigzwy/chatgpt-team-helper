@@ -1277,8 +1277,22 @@ const handleInviteSubmit = async () => {
 
         <!-- Footer -->
         <div class="px-6 py-4 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gray-50/30">
-           <div class="text-xs text-gray-500 font-medium">
-              共 {{ totalCodes }} 个兑换码
+           <div class="flex items-center gap-4">
+             <span class="text-xs text-gray-500 font-medium">共 {{ totalCodes }} 个兑换码</span>
+             <div class="flex items-center gap-1.5">
+               <span class="text-xs text-gray-400">每页</span>
+               <Select :model-value="String(pageSize)" @update:model-value="(v: string) => { pageSize = Number(v); currentPage = 1; loadCodes() }">
+                 <SelectTrigger class="h-7 w-[68px] text-xs bg-white border-gray-200 rounded-lg">
+                   <SelectValue />
+                 </SelectTrigger>
+                 <SelectContent>
+                   <SelectItem value="10">10</SelectItem>
+                   <SelectItem value="20">20</SelectItem>
+                   <SelectItem value="50">50</SelectItem>
+                   <SelectItem value="100">100</SelectItem>
+                 </SelectContent>
+               </Select>
+             </div>
            </div>
            
            <div v-if="totalPages > 1" class="flex items-center gap-1">
