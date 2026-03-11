@@ -42,8 +42,11 @@ router.use(authenticateToken, requireSuperAdmin)
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const normalizeEmail = (value) => String(value ?? '').trim().toLowerCase()
 const extractEmailFromRedeemedBy = (redeemedBy) => {
-  const raw = String(redeemedBy ?? '').trim()
+  let raw = String(redeemedBy ?? '').trim()
   if (!raw) return ''
+
+  // 去除万能兑换码标记前缀
+  raw = raw.replace(/^[㊗🔑]\u4e07\s*/g, '').trim()
 
   const match = raw.match(/email\s*:\s*([^|]+)(?:\||$)/i)
   if (match?.[1]) {
