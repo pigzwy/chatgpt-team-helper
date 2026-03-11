@@ -562,7 +562,9 @@ export async function redeemCodeInternal({
     const chatgptAccountId = String(row[4] ?? '').trim()
     if (!token || !chatgptAccountId) return false
     const expireAtMs = parseExpireAtToMs(row[6])
-    return expireAtMs != null && expireAtMs >= nowMs
+    // expire_at 为 NULL 时视为永不过期
+    if (expireAtMs == null) return true
+    return expireAtMs >= nowMs
   }
   const pickUsableAccount = (rows) => {
     if (!Array.isArray(rows) || rows.length === 0) return null
