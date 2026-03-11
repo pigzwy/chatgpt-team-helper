@@ -896,9 +896,12 @@ router.post('/', async (req, res) => {
     // 设置默认人数为1而不是0
     const finalUserCount = userCount !== undefined ? userCount : 1
 
+    // 如果没有传过期时间，默认一个月后
+    const finalExpireAt = normalizedExpireAt || formatExpireAt(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
+
     db.run(
       `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isBannedValue]
+      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, finalExpireAt, isBannedValue]
     )
 
     // 获取新创建账号的ID

@@ -253,11 +253,13 @@ router.post('/', apiKeyAuth, async (req, res) => {
       })
     } else {
 	      // 创建新账号，默认人数设置为1而不是0
+	      // 如果没有过期时间，默认一个月后
+	      const finalExpireAt = expireAt || formatExpireAt(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
 	      db.run(
 	        `INSERT INTO gpt_accounts
 	         (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_open, created_at, updated_at)
 	         VALUES (?, ?, ?, ?, ?, ?, ?, 1, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-	        [normalizedEmail, token, refreshToken || null, 1, chatgptAccountId || null, oaiDeviceId || null, expireAt]
+	        [normalizedEmail, token, refreshToken || null, 1, chatgptAccountId || null, oaiDeviceId || null, finalExpireAt]
 	      )
 
 	      // 获取新创建的账号
