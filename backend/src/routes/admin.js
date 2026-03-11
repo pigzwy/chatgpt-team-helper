@@ -42,19 +42,22 @@ router.use(authenticateToken, requireSuperAdmin)
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const normalizeEmail = (value) => String(value ?? '').trim().toLowerCase()
 const extractEmailFromRedeemedBy = (redeemedBy) => {
-  let raw = String(redeemedBy ?? '').trim()
+  const raw = String(redeemedBy ?? '').trim()
   if (!raw) return ''
 
-  // 去除万能兑换码标记前缀
-  raw = raw.replace(/^[㊗🔑]\u4e07\s*/g, '').trim()
-
+  // Linux DO 格式: "UID:xxx | Email:user@example.com"
   const match = raw.match(/email\s*:\s*([^|]+)(?:\||$)/i)
   if (match?.[1]) {
     return normalizeEmail(match[1])
   }
 
-  const normalized = normalizeEmail(raw)
-  return EMAIL_REGEX.test(normalized) ? normalized : ''
+  // 通用邮箱提取：从字符串中找到邮箱（兼容万能码等任意前缀）
+  const emailMatch = raw.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)
+  if (emailMatch) {
+    return normalizeEmail(emailMatch[0])
+  }
+
+  return ''
 }
 
 const normalizeAdminMenuPath = (value) => {
