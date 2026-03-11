@@ -996,6 +996,7 @@ const handleInviteSubmit = async () => {
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">所属账号</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">兑换用户</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">创建时间</th>
+                <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">兑换时间</th>
                 <th class="px-6 py-5 text-right text-xs font-semibold text-gray-400 uppercase tracking-wider">操作</th>
               </tr>
             </thead>
@@ -1100,6 +1101,7 @@ const handleInviteSubmit = async () => {
                    </div>
                 </td>
                 <td class="px-6 py-5 text-sm text-gray-500">{{ formatShanghaiDate(code.createdAt, dateFormatOptions).split(' ')[0] }}</td>
+                <td class="px-6 py-5 text-sm text-gray-500">{{ code.isRedeemed && code.redeemedAt ? formatShanghaiDate(code.redeemedAt, dateFormatOptions) : '-' }}</td>
 	                <td class="px-6 py-5 text-right">
 	                  <div class="flex items-center justify-end gap-1">
 	                    <!-- Reinvite -->
