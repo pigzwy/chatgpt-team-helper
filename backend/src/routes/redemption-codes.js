@@ -389,6 +389,29 @@ export async function redeemCodeInternal({
 
     resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
     usedMasterCode = true
+
+    // 万能码防重复：检查该邮箱是否已在有效期内的未封号账号上兑换过
+    const dupCheckResult = db.exec(`
+      SELECT rc.code, rc.account_email, ga.is_banned, ga.expire_at
+      FROM redemption_codes rc
+      JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
+      WHERE rc.is_redeemed = 1
+        AND LOWER(TRIM(rc.redeemed_by)) LIKE ?
+        AND COALESCE(ga.is_banned, 0) = 0
+        AND ga.is_open = 1
+    `, [`%${normalizedEmail}%`])
+
+    if (dupCheckResult.length > 0 && dupCheckResult[0].values.length > 0) {
+      // 逐条检查过期时间
+      const nowMs = Date.now()
+      for (const row of dupCheckResult[0].values) {
+        const expireAtMs = parseExpireAtToMs(row[3])
+        if (expireAtMs != null && expireAtMs >= nowMs) {
+          const existingAccountEmail = String(row[1] || '')
+          throw new RedemptionError(400, `该邮箱已在有效账号(${existingAccountEmail})上兑换过，无需重复兑换`)
+        }
+      }
+    }
   } else if (!skipCodeFormatValidation && !CODE_REGEX.test(inputCode)) {
     throw new RedemptionError(400, '兑换码格式不正确（格式：XXXX-XXXX-XXXX）')
   }
