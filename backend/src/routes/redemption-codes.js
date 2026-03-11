@@ -822,7 +822,7 @@ router.get('/', authenticateToken, requireMenu('redemption_codes'), async (req, 
         FROM redemption_codes rc
         LEFT JOIN gpt_accounts ga
           ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
-        ORDER BY rc.created_at DESC
+        ORDER BY ${req.query.sort === 'redeemed_at' ? 'rc.redeemed_at DESC NULLS LAST, rc.created_at DESC' : 'rc.created_at DESC'}
       `)
 
       if (result.length === 0 || result[0].values.length === 0) {
@@ -893,7 +893,7 @@ router.get('/', authenticateToken, requireMenu('redemption_codes'), async (req, 
         LEFT JOIN gpt_accounts ga
           ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
         ${whereClause}
-        ORDER BY rc.created_at DESC
+        ORDER BY ${req.query.sort === 'redeemed_at' ? 'rc.redeemed_at DESC NULLS LAST, rc.created_at DESC' : 'rc.created_at DESC'}
         LIMIT ? OFFSET ?
       `,
       [...params, pageSize, offset]

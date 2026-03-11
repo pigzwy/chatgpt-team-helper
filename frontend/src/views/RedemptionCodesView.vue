@@ -193,6 +193,7 @@ const pageSize = ref(10)
 // 搜索和筛选状态
 const searchQuery = ref('')
 const statusFilter = ref<'全部' | '已使用' | '未使用'>('全部')
+const sortBy = ref<'created_at' | 'redeemed_at'>('created_at')
 
 // 计算总页数
 const totalPages = computed(() => Math.max(1, Math.ceil(totalCodes.value / pageSize.value)))
@@ -314,6 +315,8 @@ watch(
 
 watch(statusFilter, () => {
   currentPage.value = 1
+  // 筛选已使用时自动按兑换时间排序
+  sortBy.value = statusFilter.value === '已使用' ? 'redeemed_at' : 'created_at'
   loadCodes()
 })
 
@@ -333,6 +336,7 @@ const loadCodes = async () => {
       pageSize: pageSize.value,
       search: searchQuery.value.trim() || undefined,
       status,
+      sort: sortBy.value !== 'created_at' ? sortBy.value : undefined,
     })
     codes.value = response.codes || []
     totalCodes.value = Number(response.pagination?.total || 0)

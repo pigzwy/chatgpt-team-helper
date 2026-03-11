@@ -2057,6 +2057,7 @@ export const redemptionCodeService = {
     pageSize?: number
     search?: string
     status?: 'all' | 'redeemed' | 'unused'
+    sort?: string
   }): Promise<{
     codes: RedemptionCode[]
     pagination: { page: number; pageSize: number; total: number }
