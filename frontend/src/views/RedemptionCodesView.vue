@@ -1239,6 +1239,10 @@ const handleInviteSubmit = async () => {
                    <span>创建时间</span>
                    <span>{{ formatShanghaiDate(code.createdAt, dateFormatOptions).split(' ')[0] }}</span>
                 </div>
+                <div v-if="code.isRedeemed && code.redeemedAt" class="flex items-center justify-between text-xs text-gray-400">
+                   <span>兑换时间</span>
+                   <span>{{ formatShanghaiDate(code.redeemedAt, dateFormatOptions) }}</span>
+                </div>
              </div>
 
 	             <div class="flex items-center justify-end gap-2 pt-2 border-t border-gray-50">
