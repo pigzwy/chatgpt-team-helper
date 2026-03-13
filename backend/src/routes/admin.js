@@ -3110,16 +3110,6 @@ router.post('/account-recovery/recover', async (req, res) => {
 	          }
 	        }
 
-	        // 3. 已成功补录检查
-	        const recoveryLogResult = db.exec(`
-	          SELECT id FROM account_recovery_logs
-	          WHERE recovery_code_id = ? AND status IN ('success', 'skipped')
-	          LIMIT 1
-	        `, [originalCodeId])
-	        if (recoveryLogResult[0]?.values?.length) {
-	          return { originalCodeId, outcome: 'invalid', message: '该兑换码已成功补录过' }
-	        }
-
 	        // 4. 订单类型检查
 	        if (orderType === 'no_warranty') {
 	          return { originalCodeId, outcome: 'invalid', message: '该兑换码为无质保订单，不支持补录' }
