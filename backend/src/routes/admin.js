@@ -3054,120 +3054,127 @@ router.post('/account-recovery/recover', async (req, res) => {
 
 	    for (const originalCodeId of originalCodeIds) {
 	      const outcome = await withLocks([`account-recovery:original:${originalCodeId}`], async () => {
-	        const originalResult = db.exec(
-	          `
-	            SELECT
-	              rc.id,
-              rc.code,
-              rc.redeemed_at,
-              rc.redeemed_by,
-              rc.account_email,
-              ga.id,
-              ga.email,
-              COALESCE(
-                NULLIF((
-                  SELECT po2.order_type
-                  FROM purchase_orders po2
-                  WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
-                  ORDER BY po2.created_at DESC
-                  LIMIT 1
-                ), ''),
-                NULLIF(rc.order_type, ''),
-                'warranty'
-              ) AS order_type
-	            FROM redemption_codes rc
-	            JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
-	            LEFT JOIN account_recovery_logs ar_recovery
-	              ON ar_recovery.recovery_code_id = rc.id
-	              AND ar_recovery.status IN ('success', 'skipped')
-	            WHERE rc.id = ?
-	              AND rc.is_redeemed = 1
-	              AND rc.redeemed_at IS NOT NULL
-	              AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
-	              AND ar_recovery.id IS NULL
-	              AND ga.is_banned = 1
-		              AND (
-		                EXISTS (
-		                  SELECT 1
-		                  FROM purchase_orders po
-		                  WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
-		                    AND po.created_at >= DATETIME('now', 'localtime', ?)
-		                    AND po.refunded_at IS NULL
-		                    AND COALESCE(po.status, '') != 'refunded'
-		                )
-		                OR EXISTS (
-		                  SELECT 1
-		                  FROM credit_orders co
-		                  WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
-		                    AND co.created_at >= DATETIME('now', 'localtime', ?)
-		                    AND co.refunded_at IS NULL
-		                    AND COALESCE(co.status, '') != 'refunded'
-		                )
-		                OR EXISTS (
-		                  SELECT 1
-		                  FROM xhs_orders xo
-                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                    AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM xianyu_orders xo
-                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                    AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-                )
-                OR (
-                  rc.redeemed_by IS NOT NULL
-                  AND trim(rc.redeemed_by) != ''
-                  AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM purchase_orders po
-                    WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM credit_orders co
-                    WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM xhs_orders xo
-                    WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM xianyu_orders xo
-                    WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                  )
-                )
-              )
-              AND COALESCE(
-                NULLIF((
-                  SELECT po2.order_type
-                  FROM purchase_orders po2
-                  WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
-                  ORDER BY po2.created_at DESC
-                  LIMIT 1
-                ), ''),
-                NULLIF(rc.order_type, ''),
-                'warranty'
-              ) != 'no_warranty'
-            LIMIT 1
-          `,
-	          [originalCodeId, threshold, threshold, threshold, threshold, threshold]
-	        )
+	        // ---- 逐步检查补录条件，提供精确错误信息 ----
 
-	        const row = originalResult[0]?.values?.[0]
+	        // 1. 兑换码是否存在且已使用
+	        const basicResult = db.exec(`
+	          SELECT rc.id, rc.code, rc.redeemed_at, rc.redeemed_by, rc.account_email,
+	                 ga.id AS ga_id, ga.email AS ga_email, COALESCE(ga.is_banned, 0) AS is_banned,
+	                 COALESCE(
+	                   NULLIF((
+	                     SELECT po2.order_type
+	                     FROM purchase_orders po2
+	                     WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+	                     ORDER BY po2.created_at DESC
+	                     LIMIT 1
+	                   ), ''),
+	                   NULLIF(rc.order_type, ''),
+	                   'warranty'
+	                 ) AS order_type
+	          FROM redemption_codes rc
+	          LEFT JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	          WHERE rc.id = ?
+	          LIMIT 1
+	        `, [originalCodeId])
+
+	        const row = basicResult[0]?.values?.[0]
 	        if (!row) {
-	          return { originalCodeId, outcome: 'invalid', message: '兑换码不存在 / 不在窗口期 / 非封号账号 / 无质保订单' }
+	          return { originalCodeId, outcome: 'invalid', message: '兑换码不存在' }
 	        }
 
-        const redeemedBy = extractEmailFromRedeemedBy(row[3])
-        if (!redeemedBy) {
-          return { originalCodeId, outcome: 'invalid', message: '兑换记录缺少有效用户邮箱' }
-        }
-
+	        const isRedeemed = row[2] != null // redeemed_at
+	        const isBanned = Number(row[7] || 0) === 1
 	        const redeemedAt = row[2] ? String(row[2]) : null
+	        const orderType = row[8] ? String(row[8]) : 'warranty'
+	        const gaId = row[5]
+
+	        if (!gaId) {
+	          return { originalCodeId, outcome: 'invalid', message: '兑换码绑定的母号不存在' }
+	        }
+
+	        if (!isRedeemed) {
+	          return { originalCodeId, outcome: 'invalid', message: '该兑换码尚未使用，无需补录' }
+	        }
+
+	        if (!isBanned) {
+	          return { originalCodeId, outcome: 'invalid', message: '母号未封号，无需补录' }
+	        }
+
+	        // 2. 窗口期检查
+	        if (redeemedAt) {
+	          const windowCheck = db.exec(`
+	            SELECT 1 WHERE ? >= DATETIME('now', 'localtime', ?)
+	          `, [redeemedAt, threshold])
+	          if (!windowCheck[0]?.values?.length) {
+	            return { originalCodeId, outcome: 'invalid', message: `兑换已超过 ${days} 天窗口期，不可补录` }
+	          }
+	        }
+
+	        // 3. 已成功补录检查
+	        const recoveryLogResult = db.exec(`
+	          SELECT id FROM account_recovery_logs
+	          WHERE recovery_code_id = ? AND status IN ('success', 'skipped')
+	          LIMIT 1
+	        `, [originalCodeId])
+	        if (recoveryLogResult[0]?.values?.length) {
+	          return { originalCodeId, outcome: 'invalid', message: '该兑换码已成功补录过' }
+	        }
+
+	        // 4. 订单类型检查
+	        if (orderType === 'no_warranty') {
+	          return { originalCodeId, outcome: 'invalid', message: '该兑换码为无质保订单，不支持补录' }
+	        }
+
+	        // 5. 来源检查（付费订单 / 平台订单 / 手动兑换）
+	        const originalCode = row[1] ? String(row[1]) : ''
+	        const hasSourceResult = db.exec(`
+	          SELECT 1 WHERE EXISTS (
+	            SELECT 1 FROM purchase_orders po
+	            WHERE (po.code_id = ? OR (po.code_id IS NULL AND po.code = ?))
+	              AND po.created_at >= DATETIME('now', 'localtime', ?)
+	              AND po.refunded_at IS NULL AND COALESCE(po.status, '') != 'refunded'
+	          ) OR EXISTS (
+	            SELECT 1 FROM credit_orders co
+	            WHERE (co.code_id = ? OR (co.code_id IS NULL AND co.code = ?))
+	              AND co.created_at >= DATETIME('now', 'localtime', ?)
+	              AND co.refunded_at IS NULL AND COALESCE(co.status, '') != 'refunded'
+	          ) OR EXISTS (
+	            SELECT 1 FROM xhs_orders xo
+	            WHERE (xo.assigned_code_id = ? OR (xo.assigned_code_id IS NULL AND xo.assigned_code = ?))
+	              AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+	          ) OR EXISTS (
+	            SELECT 1 FROM xianyu_orders xo
+	            WHERE (xo.assigned_code_id = ? OR (xo.assigned_code_id IS NULL AND xo.assigned_code = ?))
+	              AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+	          ) OR (
+	            ? IS NOT NULL AND TRIM(?) != ''
+	            AND (LOWER(?) LIKE '%@%' OR LOWER(?) LIKE '%email:%')
+	            AND NOT EXISTS (SELECT 1 FROM purchase_orders po WHERE po.code_id = ? OR (po.code_id IS NULL AND po.code = ?))
+	            AND NOT EXISTS (SELECT 1 FROM credit_orders co WHERE co.code_id = ? OR (co.code_id IS NULL AND co.code = ?))
+	            AND NOT EXISTS (SELECT 1 FROM xhs_orders xo WHERE xo.assigned_code_id = ? OR (xo.assigned_code_id IS NULL AND xo.assigned_code = ?))
+	            AND NOT EXISTS (SELECT 1 FROM xianyu_orders xo WHERE xo.assigned_code_id = ? OR (xo.assigned_code_id IS NULL AND xo.assigned_code = ?))
+	          )
+	        `, [
+	          originalCodeId, originalCode, threshold,
+	          originalCodeId, originalCode, threshold,
+	          originalCodeId, originalCode, threshold,
+	          originalCodeId, originalCode, threshold,
+	          row[3], row[3], row[3], row[3],
+	          originalCodeId, originalCode,
+	          originalCodeId, originalCode,
+	          originalCodeId, originalCode,
+	          originalCodeId, originalCode
+	        ])
+
+	        if (!hasSourceResult[0]?.values?.length) {
+	          return { originalCodeId, outcome: 'invalid', message: '未找到关联的有效订单记录（付费/平台/手动），无法补录' }
+	        }
+
+	        const redeemedBy = extractEmailFromRedeemedBy(row[3])
+	        if (!redeemedBy) {
+	          return { originalCodeId, outcome: 'invalid', message: '兑换记录缺少有效用户邮箱' }
+	        }
+
 	        const originalAccountEmail = String(row[6] || row[4] || '')
 
 	        const completedLogResult = db.exec(
@@ -3202,8 +3209,7 @@ router.post('/account-recovery/recover', async (req, res) => {
 	          }
 	        }
 
-        const originalCode = row[1] ? String(row[1]) : ''
-        const resolvedOrderType = row[7] ? String(row[7]) : null
+        const resolvedOrderType = row[8] ? String(row[8]) : null
         const orderDeadlineMs = resolveOrderDeadlineMs(db, {
           originalCodeId,
           originalCode,
