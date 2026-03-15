@@ -397,7 +397,7 @@ export async function redeemCodeInternal({
 
     // 万能码防重复：检查该邮箱是否已在有效期内的未封号账号上兑换过
     const dupCheckResult = db.exec(`
-      SELECT rc.code, rc.account_email, ga.is_banned, ga.expire_at
+      SELECT rc.code, rc.account_email, ga.is_banned, ga.expire_at, ga.id
       FROM redemption_codes rc
       JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
       WHERE rc.is_redeemed = 1
@@ -413,7 +413,35 @@ export async function redeemCodeInternal({
         const expireAtMs = parseExpireAtToMs(row[3])
         if (expireAtMs != null && expireAtMs >= nowMs) {
           const existingAccountEmail = String(row[1] || '')
-          throw new RedemptionError(400, `该邮箱已在有效账号(${existingAccountEmail})上兑换过，无需重复兑换`)
+          const existingAccountId = row[4]
+
+          // 实时验证母号是否仍可访问，失效则标记封禁并允许重新兑换
+          if (existingAccountId) {
+            try {
+              await fetchAccountUsersList(existingAccountId, {
+                userListParams: { offset: 0, limit: 1, query: '' }
+              })
+              // 母号仍可用，保持原行为：阻止重复兑换
+              throw new RedemptionError(400, `该邮箱已在有效账号(${existingAccountEmail})上兑换过，无需重复兑换`)
+            } catch (dupVerifyError) {
+              if (dupVerifyError instanceof RedemptionError) throw dupVerifyError
+              if (isAccountAccessFailure(dupVerifyError)) {
+                // 母号已失效，标记封禁并允许用户重新兑换（自动补号）
+                console.log(`[万能码重兑] 母号 ${existingAccountEmail}(id=${existingAccountId}) 已失效(${dupVerifyError?.status || dupVerifyError?.statusCode || ''}), 标记封禁并允许重新兑换`)
+                db.run(
+                  `UPDATE gpt_accounts SET is_banned = 1, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
+                  [existingAccountId]
+                )
+                saveDatabase()
+                // 不抛错，继续后续正常兑换流程（自动分配新母号）
+              } else {
+                // 网络等其他错误 → 保守处理，阻止重复兑换
+                throw new RedemptionError(400, `该邮箱已在有效账号(${existingAccountEmail})上兑换过，无需重复兑换`)
+              }
+            }
+          } else {
+            throw new RedemptionError(400, `该邮箱已在有效账号(${existingAccountEmail})上兑换过，无需重复兑换`)
+          }
         }
       }
     }
@@ -620,37 +648,79 @@ export async function redeemCodeInternal({
 
     accountResult = [{ values: [candidate] }]
   } else {
-    accountResult = db.exec(
-      `
-        SELECT id,
-               email,
-               token,
-               COALESCE(user_count, 0) AS user_count,
-               chatgpt_account_id,
-               oai_device_id,
-               expire_at
-        FROM gpt_accounts
-        WHERE COALESCE(user_count, 0) + COALESCE(invite_count, 0) < ?
-          AND COALESCE(is_open, 0) = 1
-          AND COALESCE(is_banned, 0) = 0
-          AND token IS NOT NULL
-          AND TRIM(token) != ''
-          AND chatgpt_account_id IS NOT NULL
-          AND TRIM(chatgpt_account_id) != ''
-          AND expire_at IS NOT NULL
-          AND TRIM(expire_at) != ''
-        ORDER BY COALESCE(user_count, 0) + COALESCE(invite_count, 0) ASC, RANDOM()
-        LIMIT ?
-      `,
-      [maxSeats, accountCandidatesLimit]
-    )
+    // 万能码兑换：实时验证母号可用性，失效时自动切换到下一个候选母号
+    const MAX_ACCOUNT_VERIFY_ATTEMPTS = 3
+    const excludedAccountIds = new Set()
+    let verifiedUsable = null
 
-    const candidates = accountResult?.[0]?.values || []
-    const usable = pickUsableAccount(candidates)
-    if (!usable) {
+    for (let verifyAttempt = 0; verifyAttempt < MAX_ACCOUNT_VERIFY_ATTEMPTS; verifyAttempt++) {
+      const excludeClause = excludedAccountIds.size > 0
+        ? `AND id NOT IN (${[...excludedAccountIds].map(() => '?').join(',')})`
+        : ''
+      const excludeParams = [...excludedAccountIds]
+
+      accountResult = db.exec(
+        `
+          SELECT id,
+                 email,
+                 token,
+                 COALESCE(user_count, 0) AS user_count,
+                 chatgpt_account_id,
+                 oai_device_id,
+                 expire_at
+          FROM gpt_accounts
+          WHERE COALESCE(user_count, 0) + COALESCE(invite_count, 0) < ?
+            AND COALESCE(is_open, 0) = 1
+            AND COALESCE(is_banned, 0) = 0
+            AND token IS NOT NULL
+            AND TRIM(token) != ''
+            AND chatgpt_account_id IS NOT NULL
+            AND TRIM(chatgpt_account_id) != ''
+            AND expire_at IS NOT NULL
+            AND TRIM(expire_at) != ''
+            ${excludeClause}
+          ORDER BY COALESCE(user_count, 0) + COALESCE(invite_count, 0) ASC, RANDOM()
+          LIMIT ?
+        `,
+        [maxSeats, ...excludeParams, accountCandidatesLimit]
+      )
+
+      const candidates = accountResult?.[0]?.values || []
+      const usable = pickUsableAccount(candidates)
+      if (!usable) break
+
+      // 实时验证母号 token 是否仍然有效
+      const candidateId = usable[0]
+      const candidateEmail = usable[1]
+      try {
+        await fetchAccountUsersList(candidateId, {
+          userListParams: { offset: 0, limit: 1, query: '' }
+        })
+        // 验证通过
+        verifiedUsable = usable
+        break
+      } catch (verifyError) {
+        if (isAccountAccessFailure(verifyError)) {
+          console.warn(`[万能码兑换] 母号 ${candidateEmail}(id=${candidateId}) 实时验证失败(${verifyError?.status || verifyError?.statusCode || ''}), 标记封禁并尝试下一个`)
+          db.run(
+            `UPDATE gpt_accounts SET is_banned = 1, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
+            [candidateId]
+          )
+          saveDatabase()
+          excludedAccountIds.add(candidateId)
+          continue
+        }
+        // 网络超时等非账号失效错误，不标记封禁，直接使用该账号
+        console.warn(`[万能码兑换] 母号 ${candidateEmail}(id=${candidateId}) 验证时发生非致命错误，继续使用: ${verifyError?.message || verifyError}`)
+        verifiedUsable = usable
+        break
+      }
+    }
+
+    if (!verifiedUsable) {
       throw new RedemptionError(503, '暂无可用账号，请稍后再试或联系管理员')
     }
-    accountResult = [{ values: [usable] }]
+    accountResult = [{ values: [verifiedUsable] }]
   }
 
   const account = accountResult[0].values[0]
