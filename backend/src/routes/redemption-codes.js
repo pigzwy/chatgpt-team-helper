@@ -353,6 +353,7 @@ export async function redeemCodeInternal({
   const db = await getDatabase()
   let resolvedCode = inputCode
   let usedMasterCode = false
+  const maxSeats = Math.max(1, Number(capacityLimit) || 5)
 
   // 提前解析渠道信息，万能码查询需要
   const requestedChannel = normalizeChannel(channel, 'common')
@@ -383,10 +384,11 @@ export async function redeemCodeInternal({
         AND COALESCE(ga.is_open, 0) = 1
         AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
         AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
+        AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
         ${channelFilter}
       ORDER BY rc.created_at ASC
       LIMIT 1
-    `, channelParams)
+    `, [maxSeats, ...channelParams])
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
       throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
@@ -586,7 +588,6 @@ export async function redeemCodeInternal({
 
   let accountResult
 
-  const maxSeats = Math.max(1, Number(capacityLimit) || 5)
   const nowMs = Date.now()
   const accountCandidatesLimit = 50
   const isAccountUsable = (row) => {
