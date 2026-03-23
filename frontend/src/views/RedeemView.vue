@@ -71,6 +71,15 @@
                 {{ isLoading ? '正在兑换...' : '立即兑换' }}
               </AppleButton>
             </div>
+
+            <div class="flex justify-center animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300 fill-mode-backwards">
+              <RouterLink
+                to="/buy"
+                class="inline-flex items-center rounded-full border border-[#007AFF]/20 bg-[#007AFF]/8 px-4 py-2 text-sm font-medium text-[#007AFF] transition hover:border-[#007AFF]/35 hover:bg-[#007AFF]/12 hover:text-[#005FCC]"
+              >
+                没有兑换码？前往购买
+              </RouterLink>
+            </div>
           </form>
 
           <div

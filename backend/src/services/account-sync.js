@@ -1,6 +1,7 @@
 import { getDatabase, saveDatabase } from '../database/init.js'
 import axios from 'axios'
 import { loadProxyList, loadProxyListAsync, getProxyMode, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
+import { buildChatgptAdminHeaders, getAccountChatgptId, CHATGPT_OAI_CLIENT_VERSION } from './account-client-profile.js'
 
 export class AccountSyncError extends Error {
   constructor(message, status = 500) {
@@ -90,8 +91,12 @@ function mapRowToAccount(row) {
     isOpen: Boolean(row[9]),
     isDemoted: false,
     isBanned: Boolean(row[10]),
-    createdAt: row[11],
-    updatedAt: row[12]
+    clientProfileKey: row[11] || null,
+    clientUserAgent: row[12] || null,
+    clientAcceptLanguage: row[13] || null,
+    clientOaiLanguage: row[14] || null,
+    createdAt: row[15],
+    updatedAt: row[16]
   }
 }
 
@@ -100,6 +105,7 @@ async function fetchAccountById(db, accountId) {
     `
 	    SELECT id, email, token, refresh_token, user_count, invite_count, chatgpt_account_id, oai_device_id, expire_at, is_open,
 	           COALESCE(is_banned, 0) AS is_banned,
+	           client_profile_key, client_user_agent, client_accept_language, client_oai_language,
 	           created_at, updated_at
 	    FROM gpt_accounts
 	    WHERE id = ?
@@ -119,6 +125,7 @@ export async function fetchAllAccounts() {
   const result = db.exec(`
 	    SELECT id, email, token, refresh_token, user_count, invite_count, chatgpt_account_id, oai_device_id, expire_at, is_open,
 	           COALESCE(is_banned, 0) AS is_banned,
+	           client_profile_key, client_user_agent, client_accept_language, client_oai_language,
 	           created_at, updated_at
 	    FROM gpt_accounts
 	    ORDER BY created_at DESC
@@ -129,21 +136,6 @@ export async function fetchAllAccounts() {
   }
 
   return result[0].values.map(mapRowToAccount)
-}
-
-function buildHeaders(account) {
-  return {
-    accept: '*/*',
-    'accept-language': 'zh-CN,zh;q=0.9',
-    authorization: `Bearer ${account.token}`,
-    'chatgpt-account-id': account.chatgptAccountId,
-    'oai-client-version': 'prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72',
-    'oai-device-id': account.oaiDeviceId || '',
-    'oai-language': 'zh-CN',
-    referer: 'https://chatgpt.com/admin/members?tab=members',
-    'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
-  }
 }
 
 const normalizeProxyConfig = (proxy) => {
@@ -312,7 +304,7 @@ export async function fetchOpenAiAccountInfo(token, proxy = null) {
     accept: '*/*',
     'accept-language': 'zh-CN,zh;q=0.9',
     authorization: `Bearer ${normalizedToken}`,
-    'oai-client-version': 'prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72',
+    'oai-client-version': CHATGPT_OAI_CLIENT_VERSION,
     'oai-language': 'zh-CN',
     'user-agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
@@ -437,10 +429,11 @@ async function requestAccountInvites(account, params = {}, requestOptions = {}) 
   const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0
   const query = typeof params.query === 'string' ? params.query : ''
 
-  const apiUrl = `https://chatgpt.com/backend-api/accounts/${account.chatgptAccountId}/invites?offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`
+  const accountChatgptId = getAccountChatgptId(account)
+  const apiUrl = `https://chatgpt.com/backend-api/accounts/${accountChatgptId}/invites?offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`
   const logContext = {
     accountId: account.id,
-    chatgptAccountId: account.chatgptAccountId,
+    chatgptAccountId: accountChatgptId,
     limit,
     offset,
     url: apiUrl
@@ -450,10 +443,7 @@ async function requestAccountInvites(account, params = {}, requestOptions = {}) 
     apiUrl,
     {
       method: 'GET',
-      headers: {
-        ...buildHeaders(account),
-        referer: 'https://chatgpt.com/admin/members?tab=invites'
-      },
+      headers: buildChatgptAdminHeaders(account, { action: 'listInvites' }),
       proxy: requestOptions.proxy
     },
     logContext
@@ -506,10 +496,11 @@ async function requestDeleteAccountInvite(account, emailAddress, requestOptions 
     throw new AccountSyncError('请提供邀请邮箱地址', 400)
   }
 
-  const apiUrl = `https://chatgpt.com/backend-api/accounts/${account.chatgptAccountId}/invites`
+  const accountChatgptId = getAccountChatgptId(account)
+  const apiUrl = `https://chatgpt.com/backend-api/accounts/${accountChatgptId}/invites`
   const logContext = {
     accountId: account.id,
-    chatgptAccountId: account.chatgptAccountId,
+    chatgptAccountId: accountChatgptId,
     email: trimmedEmail,
     url: apiUrl
   }
@@ -518,12 +509,11 @@ async function requestDeleteAccountInvite(account, emailAddress, requestOptions 
     apiUrl,
     {
       method: 'DELETE',
-      headers: {
-        ...buildHeaders(account),
-        'content-type': 'application/json',
-        origin: 'https://chatgpt.com',
-        referer: 'https://chatgpt.com/admin/members?tab=invites'
-      },
+      headers: buildChatgptAdminHeaders(account, {
+        action: 'deleteInvite',
+        contentType: 'application/json',
+        origin: 'https://chatgpt.com'
+      }),
       data: { email_address: trimmedEmail },
       proxy: requestOptions.proxy
     },
@@ -554,10 +544,11 @@ async function requestAccountUsers(account, params = {}, requestOptions = {}) {
   const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 25
   const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0
   const query = typeof params.query === 'string' ? params.query : ''
-  const apiUrl = `https://chatgpt.com/backend-api/accounts/${account.chatgptAccountId}/users?offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`
+  const accountChatgptId = getAccountChatgptId(account)
+  const apiUrl = `https://chatgpt.com/backend-api/accounts/${accountChatgptId}/users?offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`
   const logContext = {
     accountId: account.id,
-    chatgptAccountId: account.chatgptAccountId,
+    chatgptAccountId: accountChatgptId,
     limit,
     offset,
     query,
@@ -568,7 +559,7 @@ async function requestAccountUsers(account, params = {}, requestOptions = {}) {
     apiUrl,
     {
       method: 'GET',
-      headers: buildHeaders(account),
+      headers: buildChatgptAdminHeaders(account, { action: 'listUsers' }),
       proxy: requestOptions.proxy
     },
     logContext
@@ -769,10 +760,11 @@ export async function deleteAccountUser(accountId, userId, options = {}) {
   }
 
   const normalizedUserId = userId.startsWith('user-') ? userId : `user-${userId}`
-  const apiUrl = `https://chatgpt.com/backend-api/accounts/${account.chatgptAccountId}/users/${normalizedUserId}`
+  const accountChatgptId = getAccountChatgptId(account)
+  const apiUrl = `https://chatgpt.com/backend-api/accounts/${accountChatgptId}/users/${normalizedUserId}`
   const deleteLogContext = {
     accountId: account.id,
-    chatgptAccountId: account.chatgptAccountId,
+    chatgptAccountId: accountChatgptId,
     userId: normalizedUserId,
     url: apiUrl
   }
@@ -780,7 +772,7 @@ export async function deleteAccountUser(accountId, userId, options = {}) {
   console.info('开始删除 ChatGPT 成员', deleteLogContext)
   const { status, text } = await requestChatgptText(
     apiUrl,
-    { method: 'DELETE', headers: buildHeaders(account), proxy: options.proxy },
+    { method: 'DELETE', headers: buildChatgptAdminHeaders(account, { action: 'deleteUser' }), proxy: options.proxy },
     deleteLogContext
   )
 
@@ -845,23 +837,23 @@ export async function inviteAccountUser(accountId, email, options = {}) {
     throw new AccountSyncError('账号信息不完整，缺少 token 或 chatgpt_account_id', 400)
   }
 
-  const apiUrl = `https://chatgpt.com/backend-api/accounts/${account.chatgptAccountId}/invites`
+  const accountChatgptId = getAccountChatgptId(account)
+  const apiUrl = `https://chatgpt.com/backend-api/accounts/${accountChatgptId}/invites`
   const payload = {
     email_addresses: [trimmedEmail],
     role: 'standard-user',
     resend_emails: true
   }
 
-  const headers = {
-    ...buildHeaders(account),
-    'content-type': 'application/json',
-    origin: 'https://chatgpt.com',
-    referer: 'https://chatgpt.com/admin/members'
-  }
+  const headers = buildChatgptAdminHeaders(account, {
+    action: 'inviteUser',
+    contentType: 'application/json',
+    origin: 'https://chatgpt.com'
+  })
 
   const inviteLogContext = {
     accountId: account.id,
-    chatgptAccountId: account.chatgptAccountId,
+    chatgptAccountId: accountChatgptId,
     email: trimmedEmail,
     url: apiUrl
   }

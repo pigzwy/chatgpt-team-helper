@@ -124,9 +124,10 @@ const formData = ref<CreateGptAccountDto>({
   refreshToken: '',
   userCount: 0,
   isBanned: false,
+  isOpen: true,
   chatgptAccountId: '',
-  oaiDeviceId: '',
-  expireAt: ''
+  expireAt: '',
+  remark: ''
 })
 
 // 导入 Session JSON 相关状态
@@ -1036,9 +1037,10 @@ const openEditDialog = (account: GptAccount) => {
 	    refreshToken: account.refreshToken || '',
 	    userCount: account.userCount,
 	    isBanned: Boolean(account.isBanned),
+	    isOpen: Boolean(account.isOpen),
 	    chatgptAccountId: account.chatgptAccountId || '',
-	    oaiDeviceId: account.oaiDeviceId || '',
-	    expireAt: toDatetimeLocal(account.expireAt || '')
+	    expireAt: toDatetimeLocal(account.expireAt || ''),
+	    remark: account.remark || ''
 	  }
   showDialog.value = true
 }
@@ -1046,7 +1048,7 @@ const openEditDialog = (account: GptAccount) => {
 	const closeDialog = () => {
 	  showDialog.value = false
 	  editingAccount.value = null
-	  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isBanned: false, chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
+	  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isBanned: false, isOpen: true, chatgptAccountId: '', expireAt: '', remark: '' }
 	  checkedChatgptAccounts.value = []
 	  checkAccessTokenError.value = ''
 	  checkingAccessToken.value = false
@@ -1057,12 +1059,13 @@ const handleSubmit = async () => {
   try {
     const payload: CreateGptAccountDto = {
       ...formData.value,
+      isOpen: formData.value.isOpen !== false,
       email: formData.value.email.trim(),
       token: formData.value.token.trim(),
       refreshToken: formData.value.refreshToken?.trim() || '',
       chatgptAccountId: formData.value.chatgptAccountId?.trim() || '',
-      oaiDeviceId: formData.value.oaiDeviceId?.trim() || '',
       expireAt: fromDatetimeLocal(formData.value.expireAt?.trim() || ''),
+      remark: formData.value.remark?.trim() || '',
     }
 
     if (!payload.chatgptAccountId) {
@@ -1437,7 +1440,7 @@ const handleInviteSubmit = async () => {
           <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 h-4 w-4 transition-colors" />
           <Input
             v-model.trim="searchQuery"
-            placeholder="搜索邮箱..."
+            placeholder="搜索邮箱或备注..."
             class="pl-9 h-11 bg-white border-transparent shadow-[0_2px_10px_rgba(0,0,0,0.03)] focus:shadow-[0_4px_12px_rgba(0,0,0,0.06)] rounded-xl transition-all"
             @keyup.enter="handleSearch"
           />
@@ -1493,6 +1496,7 @@ const handleInviteSubmit = async () => {
 	              <tr class="border-b border-gray-100 bg-gray-50/50">
 	                <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">ID</th>
 	                <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">邮箱</th>
+	                <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">备注</th>
 	                <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">状态</th>
 	                <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">已加入</th>
 	                <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">待加入</th>
@@ -1523,6 +1527,11 @@ const handleInviteSubmit = async () => {
                           </span>
                         </div>
                       </div>
+	                  </div>
+	                </td>
+	                <td class="px-6 py-5 text-sm text-gray-500">
+	                  <div class="max-w-[240px] truncate" :title="account.remark || ''">
+	                    {{ account.remark || '-' }}
 	                  </div>
 	                </td>
 	                <td class="px-6 py-5 text-center">
@@ -1652,14 +1661,18 @@ const handleInviteSubmit = async () => {
 	            </div>
 
             <div class="grid grid-cols-2 gap-4 text-xs text-gray-500 mb-4 bg-gray-50/50 p-3 rounded-xl">
-          <div>
+              <div class="col-span-2">
+                <p class="mb-1 text-gray-400">备注</p>
+                <p class="text-gray-700 break-words">{{ account.remark || '-' }}</p>
+              </div>
+              <div>
                   <p class="mb-1 text-gray-400">过期时间</p>
                   <p class="font-mono text-gray-700">{{ account.expireAt || '-' }}</p>
-               </div>
-               <div>
+              </div>
+              <div>
                   <p class="mb-1 text-gray-400">创建时间</p>
                   <p class="text-gray-700">{{ formatShanghaiDate(account.createdAt, dateFormatOptions).split(' ')[0] }}</p>
-               </div>
+              </div>
             </div>
 
             <div class="flex items-center justify-between gap-2 pt-2 border-t border-gray-50">
@@ -1760,6 +1773,16 @@ const handleInviteSubmit = async () => {
                   placeholder="name@example.com"
                   class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all"
                 />
+              </div>
+
+              <div class="space-y-2">
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">备注</Label>
+                <textarea
+                  v-model="formData.remark"
+                  rows="3"
+                  placeholder="可选，记录这个账号的说明"
+                  class="flex w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 transition-all placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                ></textarea>
               </div>
 
               <div class="space-y-2">
@@ -1921,40 +1944,52 @@ const handleInviteSubmit = async () => {
                 </div>
               </div>
 
-		              <div class="grid grid-cols-2 gap-4">
-		                 <div class="space-y-2">
-		                    <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">ChatGPT ID</Label>
-                        <div class="flex items-center gap-2">
-                          <Input
-                            id="chatgpt-account-id-input"
-                            v-model="formData.chatgptAccountId"
-                            required
-                            placeholder="必填"
-                            :list="checkedChatgptAccounts.length ? 'chatgpt-account-id-options' : undefined"
-                            class="h-11 flex-1 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
-                          />
-                        </div>
-                        <datalist v-if="checkedChatgptAccounts.length" id="chatgpt-account-id-options">
-                          <option
-                            v-for="acc in checkedChatgptAccounts"
-                            :key="acc.accountId"
-                            :value="acc.accountId"
-                          >
-                            {{ acc.name }}{{ acc.expiresAt ? ` (到期 ${acc.expiresAt})` : '' }}
-                          </option>
-                        </datalist>
-		                 </div>
-		                 <div class="space-y-2">
-		                    <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">设备 ID</Label>
-		                    <Input
-		                      v-model="formData.oaiDeviceId"
-		                      placeholder="可选"
-		                      class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
-		                    />
-		                 </div>
+		              <div class="space-y-2">
+		                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">ChatGPT ID</Label>
+                    <div class="flex items-center gap-2">
+                      <Input
+                        id="chatgpt-account-id-input"
+                        v-model="formData.chatgptAccountId"
+                        required
+                        placeholder="必填"
+                        :list="checkedChatgptAccounts.length ? 'chatgpt-account-id-options' : undefined"
+                        class="h-11 flex-1 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
+                      />
+                    </div>
+                    <datalist v-if="checkedChatgptAccounts.length" id="chatgpt-account-id-options">
+                      <option
+                        v-for="acc in checkedChatgptAccounts"
+                        :key="acc.accountId"
+                        :value="acc.accountId"
+                      >
+                        {{ acc.name }}{{ acc.expiresAt ? ` (到期 ${acc.expiresAt})` : '' }}
+                      </option>
+                    </datalist>
 		              </div>
 
 	                  <div class="grid grid-cols-1 gap-4">
+	                    <div v-if="!editingAccount" class="space-y-2">
+	                      <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">开放状态</Label>
+	                      <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+	                        <button
+	                          type="button"
+	                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+	                          :class="formData.isOpen !== false ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+	                          @click="formData.isOpen = true"
+	                        >
+	                          开放
+	                        </button>
+	                        <button
+	                          type="button"
+	                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+	                          :class="formData.isOpen === false ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+	                          @click="formData.isOpen = false"
+	                        >
+	                          隐藏
+	                        </button>
+	                      </div>
+	                      <p class="text-[12px] text-gray-400">默认开放，可按需改为隐藏</p>
+	                    </div>
 	                    <div class="space-y-2">
 	                      <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">封禁状态</Label>
 	                      <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">

@@ -355,6 +355,7 @@ export interface GptAccount {
   chatgptAccountId?: string
   oaiDeviceId?: string
   expireAt?: string | null
+  remark?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -367,9 +368,11 @@ export interface CreateGptAccountDto {
   /** @deprecated 降级账号概念已移除；该字段仅保留用于兼容历史客户端（会被忽略）。 */
   isDemoted?: boolean
   isBanned?: boolean
+  isOpen?: boolean
   chatgptAccountId: string
   oaiDeviceId?: string
   expireAt?: string
+  remark?: string | null
 }
 
 export interface ChatgptAccountCheckInfo {

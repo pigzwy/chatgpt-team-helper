@@ -112,6 +112,7 @@ curl -X POST "https://<host>/api/auto-boarding" \
 ### 4.3 POST `/api/openai-accounts/generate-auth-url`
 
 生成 OpenAI 官方 OAuth 授权链接，并在服务端缓存一次性会话（默认 10 分钟有效），用于后续 `exchange-code` 校验 PKCE/state 等信息。
+默认生成的授权链接会包含 `prompt=login`、`id_token_add_organizations=true`、`codex_cli_simplified_flow=true`，并使用 `offline_access` 以便返回 `refresh_token`。
 
 **Headers**
 
@@ -137,18 +138,37 @@ curl -X POST "https://<host>/api/auto-boarding" \
 }
 ```
 
+**默认授权参数**
+
+```text
+client_id=app_EMoamEEZ73f0CkXaXp7hrann
+response_type=code
+redirect_uri=http://localhost:1455/auth/callback
+scope=openid email profile offline_access
+prompt=login
+code_challenge=<动态生成>
+code_challenge_method=S256
+state=<动态生成>
+id_token_add_organizations=true
+codex_cli_simplified_flow=true
+```
+
 **相关环境变量**
 
 | 变量名 | 说明 |
 | --- | --- |
 | `OPENAI_BASE_URL` | 授权域名（默认 `https://auth.openai.com`） |
 | `OPENAI_CLIENT_ID` | OpenAI 应用 Client ID |
-| `OPENAI_REDIRECT_URI` | 回调地址（必须与 OpenAI 应用配置一致） |
-| `OPENAI_SCOPE` | scope（默认 `openid profile email offline_access`） |
+
+回调地址和 scope 已在后端代码中固定为：
+
+- `redirect_uri=http://localhost:1455/auth/callback`
+- `scope=openid email profile offline_access`
 
 ### 4.4 POST `/api/openai-accounts/exchange-code`
 
 使用 `code` + `sessionId` 交换 OpenAI token，并返回解析后的账号/组织信息。会话为一次性，成功后会被删除；过期或重复使用需要重新生成授权链接。
+如果授权链接、OpenAI 应用配置、换码请求三者的 `redirect_uri` 不一致，接口会直接返回明确错误。若未返回 `refresh_token`，请优先确认授权 scope 中是否包含 `offline_access`。
 
 **Headers**
 

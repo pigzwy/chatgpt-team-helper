@@ -9,8 +9,9 @@ const router = express.Router()
 const OPENAI_CONFIG = {
   BASE_URL: process.env.OPENAI_BASE_URL || 'https://auth.openai.com',
   CLIENT_ID: process.env.OPENAI_CLIENT_ID || 'app_EMoamEEZ73f0CkXaXp7hrann',
-  REDIRECT_URI: process.env.OPENAI_REDIRECT_URI || 'http://localhost:1455/auth/callback',
-  SCOPE: process.env.OPENAI_SCOPE || 'openid profile email offline_access'
+  REDIRECT_URI: 'http://localhost:1455/auth/callback',
+  SCOPE: 'openid email profile offline_access',
+  PROMPT: 'login'
 }
 
 function parseProxyConfig(proxyUrl) {
@@ -62,15 +63,47 @@ function generateOpenAIPKCE() {
   return { codeVerifier, codeChallenge }
 }
 
+function resolveOpenAIOAuthErrorDetail(error) {
+  if (!error?.response) {
+    return error?.message || '未知错误'
+  }
+
+  const responseData = error.response.data
+  if (typeof responseData === 'string' && responseData.trim()) {
+    return responseData.trim()
+  }
+
+  return (
+    responseData?.error?.message ||
+    responseData?.error_description ||
+    responseData?.error ||
+    error.message ||
+    '未知错误'
+  )
+}
+
+function buildOpenAIOAuthExchangeErrorMessage(error) {
+  const detail = resolveOpenAIOAuthErrorDetail(error)
+  const normalized = String(detail).toLowerCase()
+
+  if (normalized.includes('redirect_uri')) {
+    return `交换授权码失败：redirect_uri 不匹配，请确认 OpenAI 应用配置、生成授权链接和换码请求都使用 ${OPENAI_CONFIG.REDIRECT_URI}`
+  }
+
+  if (
+    normalized.includes('invalid_grant') ||
+    normalized.includes('authorization code') ||
+    normalized.includes('code verifier') ||
+    normalized.includes('code_verifier')
+  ) {
+    return '交换授权码失败：授权码无效、已过期，或授权链接与当前会话不一致，请重新生成授权链接后再试'
+  }
+
+  return `交换授权码失败：${detail}`
+}
+
 router.post('/generate-auth-url', apiKeyAuth, async (req, res) => {
   try {
-    if (!OPENAI_CONFIG.REDIRECT_URI) {
-      return res.status(500).json({
-        success: false,
-        message: 'OPENAI_REDIRECT_URI 未配置，无法生成授权链接'
-      })
-    }
-
     const { proxy } = req.body || {}
 
     const pkce = generateOpenAIPKCE()
@@ -98,13 +131,20 @@ router.post('/generate-auth-url', apiKeyAuth, async (req, res) => {
       code_challenge: pkce.codeChallenge,
       code_challenge_method: 'S256',
       state,
+      prompt: OPENAI_CONFIG.PROMPT,
       id_token_add_organizations: 'true',
       codex_cli_simplified_flow: 'true'
     })
 
     const authUrl = `${OPENAI_CONFIG.BASE_URL}/oauth/authorize?${params.toString()}`
 
-    console.log(`🔗 Generated OpenAI OAuth authorization URL for session ${sessionId}`)
+    console.log('🔗 Generated OpenAI OAuth authorization URL', {
+      sessionId,
+      redirectUri: OPENAI_CONFIG.REDIRECT_URI,
+      scope: OPENAI_CONFIG.SCOPE,
+      prompt: OPENAI_CONFIG.PROMPT,
+      hasProxy: !!proxy
+    })
 
     return res.json({
       success: true,
@@ -138,13 +178,6 @@ router.post('/exchange-code', apiKeyAuth, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: '缺少必要参数'
-      })
-    }
-
-    if (!OPENAI_CONFIG.REDIRECT_URI) {
-      return res.status(500).json({
-        success: false,
-        message: 'OPENAI_REDIRECT_URI 未配置，无法交换授权码'
       })
     }
 
@@ -186,7 +219,8 @@ router.post('/exchange-code', apiKeyAuth, async (req, res) => {
     console.log('Exchanging OpenAI authorization code', {
       sessionId,
       hasProxy: !!proxyConfig,
-      codeLength: String(code).length
+      codeLength: String(code).length,
+      redirectUri: OPENAI_CONFIG.REDIRECT_URI
     })
 
     const tokenResponse = await axios.post(
@@ -199,6 +233,14 @@ router.post('/exchange-code', apiKeyAuth, async (req, res) => {
 
     if (!idToken || !accessToken) {
       throw new Error('未返回有效的授权令牌')
+    }
+
+    if (!refreshToken) {
+      console.warn('OpenAI OAuth token exchange returned no refresh token', {
+        sessionId,
+        scope: OPENAI_CONFIG.SCOPE,
+        prompt: OPENAI_CONFIG.PROMPT
+      })
     }
 
     const payload = decodeJwtPayload(idToken)
@@ -237,11 +279,16 @@ router.post('/exchange-code', apiKeyAuth, async (req, res) => {
       }
     })
   } catch (error) {
-    console.error('OpenAI OAuth token exchange failed:', error)
+    console.error('OpenAI OAuth token exchange failed:', {
+      message: error.message,
+      detail: resolveOpenAIOAuthErrorDetail(error),
+      status: error.response?.status,
+      data: error.response?.data
+    })
     return res.status(500).json({
       success: false,
-      message: '交换授权码失败',
-      error: error.message
+      message: buildOpenAIOAuthExchangeErrorMessage(error),
+      error: resolveOpenAIOAuthErrorDetail(error)
     })
   }
 })

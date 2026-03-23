@@ -1200,9 +1200,10 @@ const ensureLinuxDoUsersTable = (database) => {
 const ensureChannelsTable = (database) => {
   if (!database) return false
   let changed = false
+  const channelsTableExists = tableExists(database, 'channels')
 
   try {
-    if (!tableExists(database, 'channels')) {
+    if (!channelsTableExists) {
       database.run(`
         CREATE TABLE IF NOT EXISTS channels (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1252,6 +1253,7 @@ const ensureChannelsTable = (database) => {
     )
 
     for (const channel of BUILTIN_CHANNELS) {
+      if (channelsTableExists && NON_BUILTIN_KEYS.includes(channel.key)) continue
       const existing = database.exec('SELECT id FROM channels WHERE key = ? LIMIT 1', [channel.key])
       if (existing[0]?.values?.length) continue
       database.run(
@@ -2073,12 +2075,42 @@ export async function initDatabase() {
 	              saveDatabase()
 	            }
 
-	            if (!columns.includes('ban_processed')) {
-	              database.run('ALTER TABLE gpt_accounts ADD COLUMN ban_processed INTEGER DEFAULT 0')
-	              console.log('已添加 ban_processed 列到 gpt_accounts 表')
-	              saveDatabase()
-	            }
-	          }
+            if (!columns.includes('ban_processed')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN ban_processed INTEGER DEFAULT 0')
+              console.log('已添加 ban_processed 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('remark')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN remark TEXT')
+              console.log('已添加 remark 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('client_profile_key')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN client_profile_key TEXT')
+              console.log('已添加 client_profile_key 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('client_user_agent')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN client_user_agent TEXT')
+              console.log('已添加 client_user_agent 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('client_accept_language')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN client_accept_language TEXT')
+              console.log('已添加 client_accept_language 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('client_oai_language')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN client_oai_language TEXT')
+              console.log('已添加 client_oai_language 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+          }
 
 	          // 检查 redemption_codes 表的列
 	          const redemptionTableInfo = database.exec('PRAGMA table_info(redemption_codes)')
@@ -2220,6 +2252,11 @@ export async function initDatabase() {
 	      is_demoted INTEGER DEFAULT 0,
 	      is_banned INTEGER DEFAULT 0,
 	      ban_processed INTEGER DEFAULT 0,
+	      remark TEXT,
+	      client_profile_key TEXT,
+	      client_user_agent TEXT,
+	      client_accept_language TEXT,
+	      client_oai_language TEXT,
 	      created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
 	      updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
 	    )
@@ -2316,6 +2353,31 @@ export async function initDatabase() {
 	      if (!columns.includes('ban_processed')) {
 	        database.run('ALTER TABLE gpt_accounts ADD COLUMN ban_processed INTEGER DEFAULT 0')
 	        console.log('已添加 ban_processed 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('remark')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN remark TEXT')
+	        console.log('已添加 remark 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('client_profile_key')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN client_profile_key TEXT')
+	        console.log('已添加 client_profile_key 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('client_user_agent')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN client_user_agent TEXT')
+	        console.log('已添加 client_user_agent 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('client_accept_language')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN client_accept_language TEXT')
+	        console.log('已添加 client_accept_language 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('client_oai_language')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN client_oai_language TEXT')
+	        console.log('已添加 client_oai_language 列到 gpt_accounts 表')
 	      }
 	    }
 	  } catch (err) {
