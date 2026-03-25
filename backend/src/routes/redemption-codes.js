@@ -381,7 +381,6 @@ export async function redeemCodeInternal({
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_order_email IS NULL OR rc.reserved_for_order_email = '')
         AND COALESCE(ga.is_banned, 0) = 0
-        AND COALESCE(ga.is_open, 0) = 1
         AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
         AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
         AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
@@ -405,7 +404,6 @@ export async function redeemCodeInternal({
             SELECT 1 FROM gpt_accounts ga
             WHERE LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
               AND COALESCE(ga.is_banned, 0) = 0
-              AND COALESCE(ga.is_open, 0) = 1
               AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
               AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
               AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
@@ -704,7 +702,7 @@ export async function redeemCodeInternal({
 
     const isOpen = Number(boundRow[12] || 0) === 1
     const isBanned = Number(boundRow[13] || 0) === 1
-    if (isBanned || (!isOpen && !allowNonOpenAccount)) {
+    if (isBanned || (!isOpen && !allowNonOpenAccount && !usedMasterCode)) {
       throw new RedemptionError(503, `该兑换码绑定账号不可用（${isBanned ? '已封号' : '未开放'}），请联系管理员`)
     }
 
