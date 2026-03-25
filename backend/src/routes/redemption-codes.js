@@ -385,6 +385,7 @@ export async function redeemCodeInternal({
         AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
         AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
         AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
+        AND (ga.expire_at IS NULL OR ga.expire_at >= DATETIME('now', 'localtime'))
         ${channelFilter}
       ORDER BY rc.created_at ASC
       LIMIT 1
@@ -657,12 +658,12 @@ export async function redeemCodeInternal({
     const isOpen = Number(boundRow[12] || 0) === 1
     const isBanned = Number(boundRow[13] || 0) === 1
     if (isBanned || (!isOpen && !allowNonOpenAccount)) {
-      throw new RedemptionError(503, '该兑换码绑定账号不可用或已过期，请联系管理员')
+      throw new RedemptionError(503, `该兑换码绑定账号不可用（${isBanned ? '已封号' : '未开放'}），请联系管理员`)
     }
 
     const candidate = toAccountCandidateRow(boundRow)
     if (!isAccountUsable(candidate)) {
-      throw new RedemptionError(503, '该兑换码绑定账号不可用或已过期，请联系管理员')
+      throw new RedemptionError(503, '该兑换码绑定账号已过期，请联系管理员')
     }
 
     accountResult = [{ values: [candidate] }]
