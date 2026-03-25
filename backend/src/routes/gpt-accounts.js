@@ -939,7 +939,7 @@ router.put('/:id', async (req, res) => {
            expire_at = CASE WHEN ? = 1 THEN ? ELSE expire_at END,
            remark = CASE WHEN ? = 1 THEN ? ELSE remark END,
            is_banned = CASE WHEN ? = 1 THEN ? ELSE is_banned END,
-           is_open = CASE WHEN ? = 1 THEN 0 ELSE is_open END,
+           is_open = CASE WHEN ? = 1 THEN CASE WHEN ? = 1 THEN 0 ELSE 1 END ELSE is_open END,
            ban_processed = CASE WHEN ? = 1 THEN 0 ELSE ban_processed END,
            updated_at = DATETIME('now', 'localtime')
        WHERE id = ?`,
@@ -957,7 +957,8 @@ router.put('/:id', async (req, res) => {
         normalizedRemark,
         shouldUpdateIsBanned ? 1 : 0,
         isBannedValue,
-        shouldApplyBanSideEffects ? 1 : 0,
+        shouldUpdateIsBanned ? 1 : 0,
+        isBannedValue,
         shouldApplyBanSideEffects ? 1 : 0,
         req.params.id
       ]
