@@ -392,35 +392,45 @@ export async function redeemCodeInternal({
     `, [maxSeats, ...channelParams])
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
-      // 诊断：逐项检查码池为空的原因
-      const diagResult = db.exec(`
-        SELECT
-          rc.code,
-          rc.account_email,
-          rc.is_redeemed,
-          rc.reserved_for_uid,
-          rc.reserved_for_order_no,
-          rc.channel,
-          ga.email AS ga_email,
-          COALESCE(ga.is_banned, 0) AS is_banned,
-          COALESCE(ga.is_open, 0) AS is_open,
-          ga.token IS NOT NULL AND TRIM(ga.token) != '' AS has_token,
-          ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != '' AS has_account_id,
-          COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) AS seat_used,
-          ga.expire_at,
-          REPLACE(ga.expire_at, '/', '-') AS expire_at_normalized,
-          DATETIME('now', 'localtime') AS now_local
+      // 诊断：查找所有可能符合条件的未使用码
+      const diagValid = db.exec(`
+        SELECT rc.code, rc.account_email, rc.channel,
+               rc.reserved_for_uid, rc.reserved_for_order_no, rc.reserved_for_order_email,
+               COALESCE(ga.is_banned, 0) AS is_banned,
+               COALESCE(ga.is_open, 0) AS is_open,
+               COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) AS seats,
+               ga.expire_at,
+               REPLACE(ga.expire_at, '/', '-') AS expire_norm,
+               DATETIME('now', 'localtime') AS now_local
+        FROM redemption_codes rc
+        JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
+        WHERE rc.is_redeemed = 0
+          AND COALESCE(ga.is_banned, 0) = 0
+          AND COALESCE(ga.is_open, 0) = 1
+        LIMIT 20
+      `)
+      const validRows = diagValid[0]?.values || []
+      console.log('[万能码诊断] requestedChannel=%s, maxSeats=%s, allowFallback=%s',
+        requestedChannel, maxSeats, allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback)
+      console.log('[万能码诊断] 符合基本条件(未封/已开放)的未用码共 %d 条:', validRows.length)
+      for (const r of validRows) {
+        console.log('[万能码诊断] code=%s, email=%s, channel=%s, reserved_uid=%s, reserved_order=%s, reserved_email=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
+          r[0], r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[10], r[11])
+      }
+      // 查没有匹配到 gpt_accounts 的码
+      const diagOrphan = db.exec(`
+        SELECT rc.code, rc.account_email
         FROM redemption_codes rc
         LEFT JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
-        WHERE rc.is_redeemed = 0
-        LIMIT 10
+        WHERE rc.is_redeemed = 0 AND ga.id IS NULL
+        LIMIT 5
       `)
-      const diagRows = diagResult[0]?.values || []
-      console.log('[万能码诊断] requestedChannel=%s, maxSeats=%s, allowFallback=%s, channelParams=%j',
-        requestedChannel, maxSeats, allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback, channelParams)
-      for (const r of diagRows) {
-        console.log('[万能码诊断] code=%s, account_email=%s, channel=%s, ga_email=%s, banned=%s, open=%s, has_token=%s, has_aid=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
-          r[0], r[1], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14])
+      const orphanRows = diagOrphan[0]?.values || []
+      if (orphanRows.length > 0) {
+        console.log('[万能码诊断] 以下未用码的 account_email 在 gpt_accounts 中不存在:')
+        for (const r of orphanRows) {
+          console.log('[万能码诊断] code=%s, account_email=%s', r[0], r[1])
+        }
       }
       throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
     }
