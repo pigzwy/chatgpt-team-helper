@@ -385,7 +385,7 @@ export async function redeemCodeInternal({
         AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
         AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
         AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
-        AND (ga.expire_at IS NULL OR ga.expire_at >= DATETIME('now', 'localtime'))
+        AND (ga.expire_at IS NULL OR REPLACE(ga.expire_at, '/', '-') >= DATETIME('now', 'localtime'))
         ${channelFilter}
       ORDER BY rc.created_at ASC
       LIMIT 1
