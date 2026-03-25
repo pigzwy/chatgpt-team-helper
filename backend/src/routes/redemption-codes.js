@@ -662,8 +662,17 @@ export async function redeemCodeInternal({
     }
 
     const candidate = toAccountCandidateRow(boundRow)
+    const _debugExpireAt = candidate[ACCOUNT_CANDIDATE_EXPIRE_AT_INDEX]
+    const _debugExpireMs = parseExpireAtToMs(_debugExpireAt)
+    const _debugNowMs = Date.now()
+    console.log('[兑换调试] boundAccountEmail=%s, expire_at=%s, expireMs=%s, nowMs=%s, usable=%s, token存在=%s, accountId存在=%s',
+      boundAccountEmail, _debugExpireAt, _debugExpireMs, _debugNowMs,
+      isAccountUsable(candidate),
+      Boolean(String(candidate[2] ?? '').trim()),
+      Boolean(String(candidate[4] ?? '').trim())
+    )
     if (!isAccountUsable(candidate)) {
-      throw new RedemptionError(503, '该兑换码绑定账号已过期，请联系管理员')
+      throw new RedemptionError(503, `该兑换码绑定账号已过期（${boundAccountEmail}, expire_at=${_debugExpireAt}），请联系管理员`)
     }
 
     accountResult = [{ values: [candidate] }]
