@@ -392,6 +392,36 @@ export async function redeemCodeInternal({
     `, [maxSeats, ...channelParams])
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
+      // 诊断：逐项检查码池为空的原因
+      const diagResult = db.exec(`
+        SELECT
+          rc.code,
+          rc.account_email,
+          rc.is_redeemed,
+          rc.reserved_for_uid,
+          rc.reserved_for_order_no,
+          rc.channel,
+          ga.email AS ga_email,
+          COALESCE(ga.is_banned, 0) AS is_banned,
+          COALESCE(ga.is_open, 0) AS is_open,
+          ga.token IS NOT NULL AND TRIM(ga.token) != '' AS has_token,
+          ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != '' AS has_account_id,
+          COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) AS seat_used,
+          ga.expire_at,
+          REPLACE(ga.expire_at, '/', '-') AS expire_at_normalized,
+          DATETIME('now', 'localtime') AS now_local
+        FROM redemption_codes rc
+        LEFT JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
+        WHERE rc.is_redeemed = 0
+        LIMIT 10
+      `)
+      const diagRows = diagResult[0]?.values || []
+      console.log('[万能码诊断] requestedChannel=%s, maxSeats=%s, allowFallback=%s, channelParams=%j',
+        requestedChannel, maxSeats, allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback, channelParams)
+      for (const r of diagRows) {
+        console.log('[万能码诊断] code=%s, account_email=%s, channel=%s, ga_email=%s, banned=%s, open=%s, has_token=%s, has_aid=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
+          r[0], r[1], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14])
+      }
       throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
     }
 
