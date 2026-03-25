@@ -381,6 +381,7 @@ export async function redeemCodeInternal({
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_order_email IS NULL OR rc.reserved_for_order_email = '')
         AND COALESCE(ga.is_banned, 0) = 0
+        AND COALESCE(ga.is_open, 0) = 1
         AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
         AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
         AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
@@ -391,56 +392,10 @@ export async function redeemCodeInternal({
     `, [maxSeats, ...channelParams])
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
-      // 码池JOIN查询无结果，尝试直接查可用码（兼容 account_email 格式不一致的情况）
-      const fallbackResult = db.exec(`
-        SELECT rc.code, rc.account_email
-        FROM redemption_codes rc
-        WHERE rc.is_redeemed = 0
-          AND (rc.reserved_for_uid IS NULL OR rc.reserved_for_uid = '')
-          AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
-          AND (rc.reserved_for_order_email IS NULL OR rc.reserved_for_order_email = '')
-          ${channelFilter}
-          AND EXISTS (
-            SELECT 1 FROM gpt_accounts ga
-            WHERE LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
-              AND COALESCE(ga.is_banned, 0) = 0
-              AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
-              AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
-              AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
-              AND (ga.expire_at IS NULL OR REPLACE(ga.expire_at, '/', '-') >= DATETIME('now', 'localtime'))
-          )
-        ORDER BY rc.created_at ASC
-        LIMIT 1
-      `, [...channelParams, maxSeats])
-
-      if (fallbackResult.length > 0 && fallbackResult[0].values.length > 0) {
-        resolvedCode = String(fallbackResult[0].values[0][0] || '').trim().toUpperCase()
-        console.log('[万能码] JOIN查询无结果但EXISTS子查询找到码: %s (account_email=%s)', resolvedCode, fallbackResult[0].values[0][1])
-      } else {
-        // 精准诊断：列出所有未封号账号的关键字段
-        const allAccounts = db.exec(`
-          SELECT email, COALESCE(is_open, 0), COALESCE(is_banned, 0),
-                 CASE WHEN token IS NOT NULL AND TRIM(token) != '' THEN 1 ELSE 0 END,
-                 CASE WHEN chatgpt_account_id IS NOT NULL AND TRIM(chatgpt_account_id) != '' THEN 1 ELSE 0 END,
-                 COALESCE(user_count, 0) + COALESCE(invite_count, 0),
-                 expire_at,
-                 REPLACE(expire_at, '/', '-'),
-                 DATETIME('now', 'localtime')
-          FROM gpt_accounts
-          ORDER BY created_at DESC
-          LIMIT 10
-        `)
-        const rows = allAccounts[0]?.values || []
-        console.log('[万能码] 码池为空，所有账号状态:')
-        for (const r of rows) {
-          console.log('[万能码] email=%s, is_open=%s, is_banned=%s, has_token=%s, has_aid=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
-            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
-        }
-        throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
-      }
-    } else {
-      resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
+      throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
     }
+
+    resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
     usedMasterCode = true
 
     // 万能码防重复：检查该邮箱是否已在有效期内的未封号账号上兑换过
@@ -702,22 +657,13 @@ export async function redeemCodeInternal({
 
     const isOpen = Number(boundRow[12] || 0) === 1
     const isBanned = Number(boundRow[13] || 0) === 1
-    if (isBanned || (!isOpen && !allowNonOpenAccount && !usedMasterCode)) {
+    if (isBanned || (!isOpen && !allowNonOpenAccount)) {
       throw new RedemptionError(503, `该兑换码绑定账号不可用（${isBanned ? '已封号' : '未开放'}），请联系管理员`)
     }
 
     const candidate = toAccountCandidateRow(boundRow)
-    const _debugExpireAt = candidate[ACCOUNT_CANDIDATE_EXPIRE_AT_INDEX]
-    const _debugExpireMs = parseExpireAtToMs(_debugExpireAt)
-    const _debugNowMs = Date.now()
-    console.log('[兑换调试] boundAccountEmail=%s, expire_at=%s, expireMs=%s, nowMs=%s, usable=%s, token存在=%s, accountId存在=%s',
-      boundAccountEmail, _debugExpireAt, _debugExpireMs, _debugNowMs,
-      isAccountUsable(candidate),
-      Boolean(String(candidate[2] ?? '').trim()),
-      Boolean(String(candidate[4] ?? '').trim())
-    )
     if (!isAccountUsable(candidate)) {
-      throw new RedemptionError(503, `该兑换码绑定账号已过期（${boundAccountEmail}, expire_at=${_debugExpireAt}），请联系管理员`)
+      throw new RedemptionError(503, '该兑换码绑定账号已过期，请联系管理员')
     }
 
     accountResult = [{ values: [candidate] }]
