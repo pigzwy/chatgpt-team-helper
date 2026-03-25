@@ -419,19 +419,25 @@ export async function redeemCodeInternal({
         resolvedCode = String(fallbackResult[0].values[0][0] || '').trim().toUpperCase()
         console.log('[万能码] JOIN查询无结果但EXISTS子查询找到码: %s (account_email=%s)', resolvedCode, fallbackResult[0].values[0][1])
       } else {
-        // 真的没有可用码了，打印简要诊断
-        const totalUnused = db.exec(`SELECT COUNT(*) FROM redemption_codes WHERE is_redeemed = 0`)
-        const totalValid = db.exec(`
-          SELECT COUNT(*) FROM gpt_accounts
-          WHERE COALESCE(is_banned, 0) = 0 AND COALESCE(is_open, 0) = 1
-            AND token IS NOT NULL AND TRIM(token) != ''
-            AND (COALESCE(user_count, 0) + COALESCE(invite_count, 0)) < ?
-            AND (expire_at IS NULL OR REPLACE(expire_at, '/', '-') >= DATETIME('now', 'localtime'))
-        `, [maxSeats])
-        console.log('[万能码] 码池为空: 未使用码=%d, 可用账号=%d, channel=%s',
-          totalUnused[0]?.values?.[0]?.[0] || 0,
-          totalValid[0]?.values?.[0]?.[0] || 0,
-          requestedChannel)
+        // 精准诊断：列出所有未封号账号的关键字段
+        const allAccounts = db.exec(`
+          SELECT email, COALESCE(is_open, 0), COALESCE(is_banned, 0),
+                 CASE WHEN token IS NOT NULL AND TRIM(token) != '' THEN 1 ELSE 0 END,
+                 CASE WHEN chatgpt_account_id IS NOT NULL AND TRIM(chatgpt_account_id) != '' THEN 1 ELSE 0 END,
+                 COALESCE(user_count, 0) + COALESCE(invite_count, 0),
+                 expire_at,
+                 REPLACE(expire_at, '/', '-'),
+                 DATETIME('now', 'localtime')
+          FROM gpt_accounts
+          ORDER BY created_at DESC
+          LIMIT 10
+        `)
+        const rows = allAccounts[0]?.values || []
+        console.log('[万能码] 码池为空，所有账号状态:')
+        for (const r of rows) {
+          console.log('[万能码] email=%s, is_open=%s, is_banned=%s, has_token=%s, has_aid=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
+        }
         throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
       }
     } else {
