@@ -392,50 +392,51 @@ export async function redeemCodeInternal({
     `, [maxSeats, ...channelParams])
 
     if (poolResult.length === 0 || poolResult[0].values.length === 0) {
-      // 诊断：查找所有可能符合条件的未使用码
-      const diagValid = db.exec(`
-        SELECT rc.code, rc.account_email, rc.channel,
-               rc.reserved_for_uid, rc.reserved_for_order_no, rc.reserved_for_order_email,
-               COALESCE(ga.is_banned, 0) AS is_banned,
-               COALESCE(ga.is_open, 0) AS is_open,
-               COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) AS seats,
-               ga.expire_at,
-               REPLACE(ga.expire_at, '/', '-') AS expire_norm,
-               DATETIME('now', 'localtime') AS now_local
-        FROM redemption_codes rc
-        JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
-        WHERE rc.is_redeemed = 0
-          AND COALESCE(ga.is_banned, 0) = 0
-          AND COALESCE(ga.is_open, 0) = 1
-        LIMIT 20
-      `)
-      const validRows = diagValid[0]?.values || []
-      console.log('[万能码诊断] requestedChannel=%s, maxSeats=%s, allowFallback=%s',
-        requestedChannel, maxSeats, allowCommonChannelFallback && requestedChannelConfig?.allowCommonFallback)
-      console.log('[万能码诊断] 符合基本条件(未封/已开放)的未用码共 %d 条:', validRows.length)
-      for (const r of validRows) {
-        console.log('[万能码诊断] code=%s, email=%s, channel=%s, reserved_uid=%s, reserved_order=%s, reserved_email=%s, seats=%s, expire=%s, expire_norm=%s, now=%s',
-          r[0], r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[10], r[11])
-      }
-      // 查没有匹配到 gpt_accounts 的码
-      const diagOrphan = db.exec(`
+      // 码池JOIN查询无结果，尝试直接查可用码（兼容 account_email 格式不一致的情况）
+      const fallbackResult = db.exec(`
         SELECT rc.code, rc.account_email
         FROM redemption_codes rc
-        LEFT JOIN gpt_accounts ga ON LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
-        WHERE rc.is_redeemed = 0 AND ga.id IS NULL
-        LIMIT 5
-      `)
-      const orphanRows = diagOrphan[0]?.values || []
-      if (orphanRows.length > 0) {
-        console.log('[万能码诊断] 以下未用码的 account_email 在 gpt_accounts 中不存在:')
-        for (const r of orphanRows) {
-          console.log('[万能码诊断] code=%s, account_email=%s', r[0], r[1])
-        }
-      }
-      throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
-    }
+        WHERE rc.is_redeemed = 0
+          AND (rc.reserved_for_uid IS NULL OR rc.reserved_for_uid = '')
+          AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
+          AND (rc.reserved_for_order_email IS NULL OR rc.reserved_for_order_email = '')
+          ${channelFilter}
+          AND EXISTS (
+            SELECT 1 FROM gpt_accounts ga
+            WHERE LOWER(TRIM(ga.email)) = LOWER(TRIM(rc.account_email))
+              AND COALESCE(ga.is_banned, 0) = 0
+              AND COALESCE(ga.is_open, 0) = 1
+              AND ga.token IS NOT NULL AND TRIM(ga.token) != ''
+              AND ga.chatgpt_account_id IS NOT NULL AND TRIM(ga.chatgpt_account_id) != ''
+              AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < ?
+              AND (ga.expire_at IS NULL OR REPLACE(ga.expire_at, '/', '-') >= DATETIME('now', 'localtime'))
+          )
+        ORDER BY rc.created_at ASC
+        LIMIT 1
+      `, [...channelParams, maxSeats])
 
-    resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
+      if (fallbackResult.length > 0 && fallbackResult[0].values.length > 0) {
+        resolvedCode = String(fallbackResult[0].values[0][0] || '').trim().toUpperCase()
+        console.log('[万能码] JOIN查询无结果但EXISTS子查询找到码: %s (account_email=%s)', resolvedCode, fallbackResult[0].values[0][1])
+      } else {
+        // 真的没有可用码了，打印简要诊断
+        const totalUnused = db.exec(`SELECT COUNT(*) FROM redemption_codes WHERE is_redeemed = 0`)
+        const totalValid = db.exec(`
+          SELECT COUNT(*) FROM gpt_accounts
+          WHERE COALESCE(is_banned, 0) = 0 AND COALESCE(is_open, 0) = 1
+            AND token IS NOT NULL AND TRIM(token) != ''
+            AND (COALESCE(user_count, 0) + COALESCE(invite_count, 0)) < ?
+            AND (expire_at IS NULL OR REPLACE(expire_at, '/', '-') >= DATETIME('now', 'localtime'))
+        `, [maxSeats])
+        console.log('[万能码] 码池为空: 未使用码=%d, 可用账号=%d, channel=%s',
+          totalUnused[0]?.values?.[0]?.[0] || 0,
+          totalValid[0]?.values?.[0]?.[0] || 0,
+          requestedChannel)
+        throw new RedemptionError(503, '暂无可用兑换码，请稍后重试')
+      }
+    } else {
+      resolvedCode = String(poolResult[0].values[0][0] || '').trim().toUpperCase()
+    }
     usedMasterCode = true
 
     // 万能码防重复：检查该邮箱是否已在有效期内的未封号账号上兑换过
