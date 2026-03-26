@@ -426,6 +426,102 @@ router.post('/ban', apiKeyAuth, async (req, res) => {
   }
 })
 
+// 使用 API 密钥查询账号（外部系统对接用）
+// GET /api/gpt-accounts/query?email=xxx 或 ?chatgptAccountId=xxx 或 ?emails=a@x.com,b@x.com
+router.get('/query', apiKeyAuth, async (req, res) => {
+  try {
+    const db = await getDatabase()
+    const email = normalizeEmail(req.query.email)
+    const chatgptAccountId = String(req.query.chatgptAccountId ?? '').trim()
+    const emailsParam = String(req.query.emails ?? '').trim()
+
+    // 批量查询：emails 参数（逗号分隔）
+    if (emailsParam) {
+      const emails = emailsParam.split(',').map(normalizeEmail).filter(Boolean)
+      if (emails.length === 0) {
+        return res.status(400).json({ error: 'emails 参数不能为空' })
+      }
+      if (emails.length > 100) {
+        return res.status(400).json({ error: '单次查询最多 100 个邮箱' })
+      }
+
+      const placeholders = emails.map(() => '?').join(',')
+      const result = db.exec(`
+        SELECT id, email, chatgpt_account_id, COALESCE(user_count, 0) AS user_count,
+               COALESCE(invite_count, 0) AS invite_count, expire_at, COALESCE(is_open, 0) AS is_open,
+               COALESCE(is_banned, 0) AS is_banned, created_at
+        FROM gpt_accounts
+        WHERE LOWER(email) IN (${placeholders})
+      `, emails)
+
+      const found = (result[0]?.values || []).map(row => ({
+        id: row[0],
+        email: row[1],
+        chatgptAccountId: row[2],
+        userCount: row[3],
+        inviteCount: row[4],
+        expireAt: row[5] || null,
+        isOpen: Boolean(row[6]),
+        isBanned: Boolean(row[7]),
+        createdAt: row[8]
+      }))
+
+      const foundEmails = new Set(found.map(a => normalizeEmail(a.email)))
+      const notFound = emails.filter(e => !foundEmails.has(e))
+
+      return res.json({ found, notFound })
+    }
+
+    // 单个查询：email 或 chatgptAccountId
+    if (!email && !chatgptAccountId) {
+      return res.status(400).json({ error: '请提供 email、chatgptAccountId 或 emails 参数' })
+    }
+
+    const conditions = []
+    const params = []
+    if (email) {
+      conditions.push('LOWER(email) = ?')
+      params.push(email)
+    }
+    if (chatgptAccountId) {
+      conditions.push('chatgpt_account_id = ?')
+      params.push(chatgptAccountId)
+    }
+
+    const result = db.exec(`
+      SELECT id, email, chatgpt_account_id, COALESCE(user_count, 0) AS user_count,
+             COALESCE(invite_count, 0) AS invite_count, expire_at, COALESCE(is_open, 0) AS is_open,
+             COALESCE(is_banned, 0) AS is_banned, created_at
+      FROM gpt_accounts
+      WHERE ${conditions.join(' OR ')}
+      LIMIT 1
+    `, params)
+
+    if (!result[0]?.values?.length) {
+      return res.json({ exists: false, account: null })
+    }
+
+    const row = result[0].values[0]
+    return res.json({
+      exists: true,
+      account: {
+        id: row[0],
+        email: row[1],
+        chatgptAccountId: row[2],
+        userCount: row[3],
+        inviteCount: row[4],
+        expireAt: row[5] || null,
+        isOpen: Boolean(row[6]),
+        isBanned: Boolean(row[7]),
+        createdAt: row[8]
+      }
+    })
+  } catch (error) {
+    console.error('Query GPT account via API key error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 router.use(authenticateToken, requireMenu('accounts'))
 
 // 校验 access token，并返回可用的 Team 账号列表（用于新建账号时选择 chatgptAccountId）
